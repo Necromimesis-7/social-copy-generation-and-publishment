@@ -1,0 +1,45 @@
+services:
+  - type: web
+    name: overseas-social-content-studio
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    disk:
+      name: studio-data
+      mountPath: /var/data
+      sizeGB: 5
+    envVars:
+      - key: DATA_ROOT
+        value: /var/data
+      - key: AI_PROVIDER
+        value: gateway
+      - key: GATEWAY_API_KEY
+        sync: false
+      - key: GATEWAY_MODEL
+        value: gpt-5.4
+      - key: GATEWAY_BASE_URL
+        value: https://ai.leihuo.netease.com/v1
+      - key: GATEWAY_REQUEST_TIMEOUT_MS
+        value: 45000
+      - key: MAX_VIDEO_FRAMES
+        value: 12
+      - key: OPENAI_VISUAL_INPUT_LIMIT
+        value: 12
+      - key: OPENAI_REQUEST_TIMEOUT_MS
+        value: 45000
+      - key: MAX_IMPORTED_SAMPLES
+        value: 20
+      - key: SAMPLE_IMPORT_TIMEOUT_MS
+        value: 15000
+      - key: METRICOOL_API_TOKEN
+        sync: false
+      - key: METRICOOL_USER_ID
+        sync: false
+      - key: METRICOOL_BASE_URL
+        value: https://app.metricool.com/api
+      - key: PUBLIC_APP_URL
+        sync: false
+      - key: PUBLISH_POLL_INTERVAL_MS
+        value: 15000

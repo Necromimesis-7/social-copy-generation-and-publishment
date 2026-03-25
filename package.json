@@ -1,0 +1,13 @@
+{
+  "name": "overseas-social-content-studio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "PORT=4175 node server.mjs",
+    "start": "node server.mjs"
+  }
+}

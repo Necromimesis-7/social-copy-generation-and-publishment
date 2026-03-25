@@ -1,0 +1,7 @@
+data/
+.DS_Store
+.env
+node_modules/
+.codex/
+.pycache-skill/
+tmp_test.txt

@@ -138,6 +138,7 @@ Notes:
 
 - `METRICOOL_API_TOKEN` and `METRICOOL_USER_ID` are required before the app can sync Metricool brands.
 - `PUBLIC_APP_URL` should be a public HTTPS base URL where Metricool can fetch uploaded media. If it is missing or points to localhost, media-required channels such as Instagram, TikTok, and YouTube will reject publishing.
+- On Render, if `PUBLIC_APP_URL` is left blank, the app will automatically fall back to `https://${RENDER_EXTERNAL_HOSTNAME}`.
 - Scheduled publishing depends on this app process staying online. The local dispatcher checks queued jobs every `PUBLISH_POLL_INTERVAL_MS`.
 - Current Metricool integration assumes one connected channel per network inside a Metricool brand. If you manage multiple accounts on the same platform, they usually need separate Metricool brands to publish distinctly.
 
@@ -156,8 +157,8 @@ Recommended Render setup:
    - `GATEWAY_API_KEY`
    - `METRICOOL_API_TOKEN`
    - `METRICOOL_USER_ID`
-   - `PUBLIC_APP_URL`
-5. After the first deploy, set `PUBLIC_APP_URL` to your Render service URL, for example `https://your-app.onrender.com`, and redeploy once so uploaded media URLs are generated correctly.
+   - `PUBLIC_APP_URL` (optional on Render now)
+5. If you leave `PUBLIC_APP_URL` blank, the service will use its Render hostname automatically. If you later bind a custom domain, set `PUBLIC_APP_URL` to that custom HTTPS domain and redeploy once.
 6. Open `/api/health` on the deployed domain and confirm:
    - `ok: true`
    - `metricool.configured: true`

@@ -11,7 +11,9 @@ export function getMetricoolConfig() {
   const token = String(process.env.METRICOOL_API_TOKEN || "").trim();
   const userId = String(process.env.METRICOOL_USER_ID || "").trim();
   const baseUrl = String(process.env.METRICOOL_BASE_URL || DEFAULT_BASE_URL).trim() || DEFAULT_BASE_URL;
-  const publicAppUrl = String(process.env.PUBLIC_APP_URL || "").trim().replace(/\/+$/, "");
+  const configuredPublicAppUrl = String(process.env.PUBLIC_APP_URL || "").trim().replace(/\/+$/, "");
+  const renderHostname = String(process.env.RENDER_EXTERNAL_HOSTNAME || "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+  const publicAppUrl = configuredPublicAppUrl || (renderHostname ? `https://${renderHostname}` : "");
 
   return {
     token,

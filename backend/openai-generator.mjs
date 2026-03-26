@@ -11,6 +11,12 @@ import {
   sanitizeAssetInsights,
 } from "./fallback-generator.mjs";
 import { buildStyleProfile, selectReferenceSamples } from "./sample-reference.mjs";
+import {
+  buildTargetListText,
+  formatGenerationTypeLabel,
+  getGenerationTargets,
+  getTargetKey,
+} from "./target-outputs.mjs";
 
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5-mini";
@@ -42,7 +48,7 @@ function buildSamplesSection(samples) {
     .slice(0, 20)
     .map(
       (sample, index) =>
-        `${index + 1}. Platform: ${sample.platform}; Mode: ${sample.mode}; Date: ${sample.publishedAt || "unknown"}; Text: ${excerpt(
+        `${index + 1}. Type: ${sample.sampleType || "general"}; Account: ${sample.accountLabel || "project-wide"}; Date: ${sample.publishedAt || "unknown"}; Text: ${excerpt(
           sample.body,
           420,
         )}`,
@@ -214,20 +220,22 @@ function buildGenerationSchema() {
     type: "object",
     additionalProperties: false,
     properties: {
-      general_candidates: {
+      platform_outputs: {
         type: "array",
         items: {
           type: "object",
           additionalProperties: false,
           properties: {
-            label: { type: "string" },
+            platform: { type: "string" },
+            account_label: { type: "string" },
+            title: { type: ["string", "null"] },
             body: { type: "string" },
           },
-          required: ["label", "body"],
+          required: ["platform", "account_label", "title", "body"],
         },
       },
     },
-    required: ["general_candidates"],
+    required: ["platform_outputs"],
   };
 }
 
@@ -370,13 +378,20 @@ function buildAssetInsightInput({ assets, generationType }) {
   ].join("\n");
 }
 
-function buildGenerationInput({ samples, assetInsights, generationType, trendContext, styleProfile }) {
+function buildGenerationInput({ samples, assetInsights, generationType, trendContext, styleProfile, targets }) {
   return [
     "Write English social copy using only these two sources of truth:",
     "1. Approved recent post references for writing style and structural reference.",
     "2. Extracted asset insights for the actual new information that must be covered.",
     "Do not use project settings or account setup as generation inputs.",
     "Do not mention being an AI, the prompt, or missing context.",
+    "",
+    "Target channels:",
+    buildTargetListText(targets),
+    "",
+    "Return exactly one output for each target listed above, in the same order.",
+    "For YouTube, return both title and body.",
+    "For every other platform, set title to null and return one publishable body.",
     "",
     formatGenerationModeInstructions(generationType, trendContext),
     "",
@@ -393,21 +408,31 @@ function buildGenerationInput({ samples, assetInsights, generationType, trendCon
   ].join("\n");
 }
 
-function mergeWithFallback({ fallbackPackage, parsed }) {
-  const generalCandidates = Array.isArray(parsed.general_candidates)
-    ? parsed.general_candidates.filter((item) => item?.body)
+function mergeWithFallback({ targets, fallbackPackage, parsed }) {
+  const parsedOutputs = Array.isArray(parsed.platform_outputs)
+    ? parsed.platform_outputs.filter((item) => item?.platform && item?.body)
     : [];
-  const fallbackGeneral = fallbackPackage.outputs.filter((item) => item.platform === "general");
-  const finalGeneral = generalCandidates.length ? generalCandidates : fallbackGeneral;
+  const parsedByKey = new Map(parsedOutputs.map((item) => [getTargetKey({ platform: item.platform, accountLabel: item.account_label }), item]));
+  const parsedByPlatform = new Map(parsedOutputs.map((item) => [item.platform, item]));
+  const fallbackByKey = new Map(
+    (fallbackPackage.outputs || []).map((item) => [getTargetKey({ platform: item.platform, accountLabel: item.accountLabel, accountId: item.accountId }), item]),
+  );
 
-  return finalGeneral.slice(0, 3).map((candidate, index) => ({
-    platform: "general",
-    accountId: null,
-    accountLabel: "",
-    candidateIndex: index,
-    title: null,
-    body: candidate.body,
-  }));
+  return targets.map((target, index) => {
+    const source =
+      parsedByKey.get(getTargetKey(target))
+      || (targets.filter((item) => item.platform === target.platform).length === 1 ? parsedByPlatform.get(target.platform) : null)
+      || fallbackByKey.get(getTargetKey(target));
+
+    return {
+      platform: target.platform,
+      accountId: target.accountId,
+      accountLabel: target.accountLabel,
+      candidateIndex: index,
+      title: target.platform === "YouTube" ? source?.title || null : null,
+      body: source?.body || "",
+    };
+  }).filter((item) => item.body);
 }
 
 export async function generateDraftPackageWithOpenAI({
@@ -421,6 +446,13 @@ export async function generateDraftPackageWithOpenAI({
 }) {
   if (!process.env.OPENAI_API_KEY) {
     throw new Error("OPENAI_API_KEY is not set.");
+  }
+
+  const targets = getGenerationTargets(project);
+  if (!targets.length) {
+    const error = new Error("Sync a Metricool brand with at least one supported channel before generating copy.");
+    error.statusCode = 400;
+    throw error;
   }
 
   const rawInsights = await callResponsesJson({
@@ -462,6 +494,7 @@ export async function generateDraftPackageWithOpenAI({
       generationType,
       trendContext,
       styleProfile,
+      targets,
     }),
     assets,
     uploadsRoot,
@@ -482,11 +515,11 @@ export async function generateDraftPackageWithOpenAI({
   return {
     provider: "openai",
     generationType,
-    title: `${generationType.charAt(0).toUpperCase() + generationType.slice(1)} draft for ${project.name}`,
+    title: `${formatGenerationTypeLabel(generationType)} draft for ${project.name}`,
     assetMode: fallbackPackage.assetMode,
     assetSummary: formatAssetInsightSummary(assetInsights),
     assetInsights,
     sampleCount: referenceSamples.length,
-    outputs: mergeWithFallback({ fallbackPackage, parsed: parsedCopy }),
+    outputs: mergeWithFallback({ targets, fallbackPackage, parsed: parsedCopy }),
   };
 }

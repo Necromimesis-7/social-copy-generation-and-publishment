@@ -1,7 +1,7 @@
 import "./backend/env.mjs";
 
 import { randomUUID } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import http from "node:http";
 import { DatabaseSync } from "node:sqlite";
@@ -20,10 +20,10 @@ import {
 import { isUsableSampleText } from "./backend/sample-quality.mjs";
 import { normalizeReviewStatus, normalizeSampleType } from "./backend/sample-reference.mjs";
 import { importSamplesFromUrl } from "./backend/sample-importer.mjs";
+import { formatGenerationTypeLabel, normalizeGenerationType } from "./backend/target-outputs.mjs";
 import { researchTrendingContext } from "./backend/trend-research.mjs";
 import {
   createDefaultAccount,
-  createDefaultAccounts,
   createDefaultProjectData,
   platformOrder,
   seedProjects,
@@ -360,6 +360,12 @@ async function handleApi(req, res, url) {
   if (parts[1] === "projects" && parts[2]) {
     const projectId = parts[2];
 
+    if (req.method === "DELETE" && parts.length === 3) {
+      deleteProject(projectId);
+      sendAppState(res, 200);
+      return;
+    }
+
     if (req.method === "PUT" && parts.length === 3) {
       const body = await readJson(req);
       updateProject(projectId, body);
@@ -527,15 +533,6 @@ function parseJsonObject(value) {
   }
 }
 
-function normalizeGenerationType(value) {
-  return ["update", "trending", "general"].includes(value) ? value : "general";
-}
-
-function formatGenerationTypeLabel(value) {
-  const resolved = normalizeGenerationType(value);
-  return `${resolved.charAt(0).toUpperCase()}${resolved.slice(1)}`;
-}
-
 function sanitizeFileName(value) {
   const clean = String(value || "upload.bin").replace(/[^a-zA-Z0-9._-]/g, "-");
   return clean || "upload.bin";
@@ -620,7 +617,7 @@ function normalizeAccount(accountInput = {}, projectName = "New Brand", index = 
 }
 
 function normalizeAccounts(accounts = [], projectName = "New Brand") {
-  const source = Array.isArray(accounts) && accounts.length ? accounts : createDefaultAccounts(projectName);
+  const source = Array.isArray(accounts) ? accounts : [];
   return sortAccounts(source.map((account, index) => normalizeAccount(account, projectName, index)));
 }
 
@@ -823,6 +820,31 @@ function updateProject(projectId, body = {}) {
   );
 
   syncProjectAccounts(projectId, normalizeAccounts(accountsSource, projectName));
+}
+
+function deleteProject(projectId) {
+  const existing = getProjectRow(projectId);
+  if (!existing) {
+    throw httpError(404, "Project not found");
+  }
+
+  const generationIds = db
+    .prepare("SELECT id FROM generation_runs WHERE project_id = ?")
+    .all(projectId)
+    .map((row) => row.id);
+
+  generationIds.forEach((generationId) => {
+    db.prepare("DELETE FROM generation_outputs WHERE generation_id = ?").run(generationId);
+  });
+
+  db.prepare("DELETE FROM publish_jobs WHERE project_id = ?").run(projectId);
+  db.prepare("DELETE FROM assets WHERE project_id = ?").run(projectId);
+  db.prepare("DELETE FROM content_samples WHERE project_id = ?").run(projectId);
+  db.prepare("DELETE FROM project_accounts WHERE project_id = ?").run(projectId);
+  db.prepare("DELETE FROM generation_runs WHERE project_id = ?").run(projectId);
+  db.prepare("DELETE FROM projects WHERE id = ?").run(projectId);
+
+  rmSync(join(uploadRoot, projectId), { recursive: true, force: true });
 }
 
 function getProjectMetricoolState(row) {
@@ -1409,6 +1431,10 @@ async function createGeneration(projectId, req) {
     throw httpError(404, "Project not found");
   }
 
+  if (!project.accounts?.length) {
+    throw httpError(400, "Sync a Metricool brand with at least one supported channel before generating copy.");
+  }
+
   const formData = await readFormData(req);
   const imageFiles = formData
     .getAll("images")
@@ -1875,81 +1901,110 @@ function formatTargetLabel(platform, accountLabel) {
   return `${platform} / ${accountLabel}`;
 }
 
+function draftPlatformSortValue(platform = "") {
+  if (platform === "general") {
+    return platformOrder.length + 1;
+  }
+
+  const index = platformOrder.indexOf(platform);
+  return index === -1 ? platformOrder.length + 2 : index;
+}
+
 function buildDraftOutputs(latestRun, outputs) {
   const providerLabel = latestRun ? formatProviderLabel(resolveRunProvider(latestRun)) : "";
-  const drafts = {
-    general: {
-      heading: latestRun ? `${formatGenerationTypeLabel(latestRun.generation_type || "general")} draft` : "Generated draft",
-      meta: latestRun
-        ? [
-            ...(providerLabel ? [`Provider: ${providerLabel}`] : []),
-            `Type: ${formatGenerationTypeLabel(latestRun.generation_type || "general")}`,
-            `${latestRun.sample_count} sample${latestRun.sample_count === 1 ? "" : "s"} referenced`,
-            latestRun.asset_summary,
-            "English output",
-          ]
-        : ["Pending generation", "English output"],
-      entries: latestRun
-        ? outputs
-            .filter((output) => output.platform === "general")
-            .map((output, index) =>
-              buildOutputEntry({
-                output,
-                label: `Candidate ${index + 1}`,
-                fields: [
+  const entries = latestRun
+    ? Array.from(
+        outputs
+          .slice()
+          .sort((left, right) => {
+            if (Number(right.is_preferred || 0) !== Number(left.is_preferred || 0)) {
+              return Number(right.is_preferred || 0) - Number(left.is_preferred || 0);
+            }
+
+            const platformDelta = draftPlatformSortValue(left.platform) - draftPlatformSortValue(right.platform);
+            if (platformDelta !== 0) {
+              return platformDelta;
+            }
+
+            return `${left.account_label || ""} ${left.candidate_index || 0}`.localeCompare(
+              `${right.account_label || ""} ${right.candidate_index || 0}`,
+            );
+          })
+          .reduce((map, output) => {
+            const uiPlatform = dbToUiPlatform[output.platform] || output.platform;
+            const scopeKey = uiPlatform === "general"
+              ? "general"
+              : `${uiPlatform}:${output.account_id || output.account_label || ""}`;
+
+            if (!map.has(scopeKey)) {
+              map.set(scopeKey, { output, uiPlatform });
+            }
+
+            return map;
+          }, new Map())
+          .values(),
+      ).map(({ output, uiPlatform }) =>
+        buildOutputEntry({
+          output,
+          label:
+            uiPlatform === "general"
+              ? "General draft"
+              : formatTargetLabel(uiPlatform, output.account_label || ""),
+          platform: uiPlatform,
+          accountId: output.account_id || null,
+          accountLabel: output.account_label || "",
+          fields:
+            uiPlatform === "YouTube"
+              ? [
+                  {
+                    key: "title",
+                    label: "Title",
+                    value: output.title || "",
+                    placeholder: "No title yet.",
+                    multiline: false,
+                  },
                   {
                     key: "body",
-                    label: "Copy",
+                    label: "Description",
+                    value: output.body || "",
+                    placeholder: "No description yet.",
+                    multiline: true,
+                  },
+                ]
+              : [
+                  {
+                    key: "body",
+                    label: uiPlatform === "X" ? "Post" : "Caption",
                     value: output.body || "",
                     placeholder: "No output yet.",
                     multiline: true,
                   },
                 ],
-              }),
-            )
-        : [
-            buildOutputEntry({
-              output: null,
-              label: "Candidate 1",
-              fields: [
-                {
-                  key: "body",
-                  label: "Copy",
-                  value: "",
-                  placeholder: "Upload assets and generate the first draft.",
-                  multiline: true,
-                },
-              ],
-            }),
-          ],
-    },
+        }),
+      )
+    : [];
+
+  return {
+    heading: latestRun ? `${formatGenerationTypeLabel(latestRun.generation_type || "general")} outputs` : "Generated outputs",
+    meta: latestRun
+      ? [
+          ...(providerLabel ? [`Provider: ${providerLabel}`] : []),
+          `Type: ${formatGenerationTypeLabel(latestRun.generation_type || "general")}`,
+          `${latestRun.sample_count} sample${latestRun.sample_count === 1 ? "" : "s"} referenced`,
+          latestRun.asset_summary,
+        ]
+      : [],
+    entries,
   };
-
-  if (!drafts.general.entries.length) {
-    drafts.general.entries = [
-      buildOutputEntry({
-        output: null,
-        label: "Candidate 1",
-        fields: [
-          {
-            key: "body",
-            label: "Copy",
-            value: "",
-            placeholder: "No output yet.",
-            multiline: true,
-          },
-        ],
-      }),
-    ];
-  }
-
-  return drafts;
 }
 
-function buildOutputEntry({ output, label, fields }) {
+function buildOutputEntry({ output, label, platform, accountId, accountLabel, fields }) {
   return {
     id: output?.id || null,
     label,
+    platform: platform || output?.platform || "general",
+    accountId: accountId || output?.account_id || null,
+    accountLabel: accountLabel || output?.account_label || "",
     isPreferred: Boolean(output?.is_preferred),
     fields,
   };

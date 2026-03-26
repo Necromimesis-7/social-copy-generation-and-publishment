@@ -9,140 +9,54 @@
   <body>
     <div class="orb orb-one"></div>
     <div class="orb orb-two"></div>
+
+    <header class="global-header panel">
+      <div>
+        <p class="eyebrow">Overseas social workflow</p>
+        <h1>Social Copy Publishing Studio</h1>
+      </div>
+      <div class="global-header-actions">
+        <label class="field">
+          <span>Current project</span>
+          <select id="projectSelect"></select>
+        </label>
+      </div>
+    </header>
+
     <div class="app-shell">
       <aside class="sidebar">
-        <div>
-          <p class="eyebrow">Content Studio</p>
-          <h1>Social copy generation</h1>
-          <p class="sidebar-copy">
-            Build English copy from recent post patterns and fresh asset extraction.
-          </p>
-        </div>
-
         <section class="panel project-switcher">
-          <div class="section-head">
-            <span>Projects</span>
-            <button class="ghost-button surface-button" id="newProjectButton" type="button">New</button>
-          </div>
-          <label class="field">
-            <span>Switch project</span>
-            <select id="projectSelect"></select>
-          </label>
+          <button class="primary-button" id="newProjectButton" type="button">Create project</button>
         </section>
 
-        <section class="panel mini-panel">
-          <p class="mini-title">MVP scope</p>
-          <ul class="mini-list">
-            <li>X post copy</li>
-            <li>Instagram caption</li>
-            <li>TikTok caption</li>
-            <li>YouTube title + description</li>
-          </ul>
-        </section>
+        <nav class="panel tab-nav" id="tabNav"></nav>
       </aside>
 
       <main class="workspace">
-        <section class="hero panel">
-          <div>
-            <p class="eyebrow">Current project</p>
-            <h2 id="projectName">Northstar Skin</h2>
-          </div>
-          <div class="hero-actions">
-            <button class="secondary-button" id="duplicateProjectButton" type="button">Clone project</button>
-            <button class="primary-button" id="saveProjectButton" type="button">Save changes</button>
-          </div>
-        </section>
-
-        <section class="priority-grid">
-          <section class="panel stack-section">
-            <div class="section-head">
-              <div>
-                <p class="eyebrow">Assets</p>
-                <h3>Upload for generation</h3>
-              </div>
+        <section class="project-workspace" id="projectWorkspace">
+          <section class="hero panel">
+            <div>
+              <p class="eyebrow">Current project</p>
+              <h2 id="projectName">No project</h2>
+              <p class="muted-copy" id="projectHeroHint">Create a project to begin.</p>
             </div>
-
-            <div class="upload-row">
-              <label class="upload-card">
-                <span>Multi-image set</span>
-                <input id="imageUploadInput" type="file" accept="image/*" multiple />
-                <small>Upload one or more images for a single content batch.</small>
-              </label>
-              <label class="upload-card">
-                <span>Single video</span>
-                <input id="videoUploadInput" type="file" accept="video/*" />
-                <small>Only one video is allowed per generation run.</small>
-              </label>
-            </div>
-
-            <div id="assetSummary" class="asset-summary empty-state">
-              No assets selected yet. You can still configure the project first.
-            </div>
-
-            <div class="target-stack">
-              <div class="section-head compact-head">
-                <div>
-                  <p class="eyebrow">Template</p>
-                  <h4>Generation mode</h4>
-                </div>
-              </div>
-              <div id="generationTypeList" class="target-list mode-list"></div>
-            </div>
-
-            <div class="target-stack">
-              <div class="section-head compact-head">
-                <div>
-                  <p class="eyebrow">Extraction</p>
-                  <h4>Latest extracted signals</h4>
-                </div>
-              </div>
-              <div id="assetInsightsPanel" class="asset-summary empty-state">
-                Run a generation to inspect extracted dates, updates, rewards, visible text, and frame-level notes.
-              </div>
-            </div>
-
-            <div class="generate-bar">
-              <div>
-                <p class="eyebrow">Generation</p>
-                <p class="muted-copy">
-                  Uses approved recent post samples only, then matches the closest 3-5 references against uploaded asset extraction. Project settings and account setup are not used for current generation.
-                </p>
-                <p class="muted-copy" id="generationModeHint">Mode: local fallback</p>
-              </div>
-              <div class="generate-actions">
-                <button class="secondary-button" id="stopGenerateButton" type="button" hidden>Stop</button>
-                <button class="primary-button" id="generateButton" type="button">Generate drafts</button>
-              </div>
+            <div class="hero-actions">
+              <button class="ghost-button" id="deleteProjectButton" type="button">Delete project</button>
+              <button class="primary-button" id="saveProjectButton" type="button">Save project</button>
             </div>
           </section>
 
-          <section class="panel stack-section">
-            <div class="section-head outputs-head">
-              <div>
-                <p class="eyebrow">Outputs</p>
-                <h3>Generated copy</h3>
-              </div>
-            </div>
-
-            <div id="outputPanel" class="output-panel"></div>
-          </section>
-        </section>
-
-        <section class="settings-grid">
-          <section class="panel stack-section">
+          <section class="panel stack-section tab-page" id="tabProjectPage" data-tab-page="project">
             <div class="section-head">
               <div>
-                <p class="eyebrow">Metadata</p>
-                <h3>Project settings</h3>
+                <p class="eyebrow">Project</p>
+                <h3>Project setup</h3>
               </div>
             </div>
-            <p class="muted-copy">
-              These fields only manage the project record. They do not affect current generation.
-            </p>
 
             <div class="field-grid">
               <label class="field">
-                <span>Brand name</span>
+                <span>Project name</span>
                 <input id="brandNameInput" type="text" />
               </label>
             </div>
@@ -151,7 +65,7 @@
               <div class="section-head compact-head">
                 <div>
                   <p class="eyebrow">Publishing</p>
-                  <h4>Metricool</h4>
+                  <h4>Metricool brand</h4>
                 </div>
                 <button class="ghost-button" id="syncMetricoolBrandsButton" type="button">Sync brands</button>
               </div>
@@ -165,37 +79,32 @@
                 </select>
               </label>
               <p class="muted-copy" id="metricoolChannelHint">
-                Metricool publishes to the connected channel for each supported network inside that brand.
+                Generation and publishing follow the real connected channels in this Metricool brand.
               </p>
             </div>
-          </section>
 
-          <section class="panel stack-section">
-            <div class="section-head">
-              <div>
-                <p class="eyebrow">Target channels</p>
-                <h3>Account setup</h3>
+            <section class="stack-section">
+              <div class="section-head compact-head">
+                <div>
+                  <p class="eyebrow">Channels</p>
+                  <h4>Connected channels</h4>
+                </div>
               </div>
-            </div>
-            <p class="muted-copy">
-              Connected channels are pulled from the selected Metricool brand. Copy generation still does not use them.
-            </p>
-            <div id="accountGrid" class="account-grid"></div>
+              <div id="accountGrid" class="account-grid"></div>
+            </section>
           </section>
-        </section>
 
-        <section class="content-grid">
-          <section class="panel stack-section">
+          <section class="panel stack-section tab-page" id="tabSamplesPage" data-tab-page="samples" hidden>
             <div class="section-head">
               <div>
                 <p class="eyebrow">Samples</p>
                 <h3>Recent post library</h3>
               </div>
-              <button class="ghost-button" id="addSampleButton" type="button">Add sample</button>
+              <button class="secondary-button" id="addSampleButton" type="button">Import sample</button>
             </div>
 
             <div class="field-grid compact-grid">
-              <label class="field">
+              <label class="field field-wide">
                 <span>Social link</span>
                 <input id="sampleLinkInput" type="url" placeholder="https://..." />
               </label>
@@ -209,66 +118,159 @@
                 <span>Sample type</span>
                 <select id="sampleTypeInput">
                   <option value="general">General</option>
-                  <option value="update">Update</option>
+                  <option value="update">Update &amp; events</option>
                   <option value="trending">Trending</option>
                 </select>
               </label>
             </div>
 
             <div id="sampleList" class="sample-list"></div>
-            <button class="ghost-button" id="sampleToggleButton" type="button" hidden>Show older samples</button>
+            <button class="secondary-button" id="sampleToggleButton" type="button" hidden>Show older samples</button>
           </section>
 
-          <section class="panel stack-section">
+          <section class="panel stack-section tab-page" id="tabCreatePage" data-tab-page="create" hidden>
             <div class="section-head">
               <div>
-                <p class="eyebrow">Publishing</p>
-                <h3>Recent publish jobs</h3>
+                <p class="eyebrow">Create</p>
+                <h3>Upload and generate</h3>
               </div>
             </div>
-            <div id="publishJobsList" class="history-list"></div>
+
+            <section class="target-stack">
+              <div class="section-head compact-head">
+                <div>
+                  <p class="eyebrow">Synced channels</p>
+                  <h4>Generation targets</h4>
+                </div>
+              </div>
+              <div id="syncedTargetList" class="target-list"></div>
+            </section>
+
+            <div class="upload-row">
+              <label class="upload-card">
+                <span>Multi-image set</span>
+                <input id="imageUploadInput" type="file" accept="image/*" multiple />
+                <small>Upload one or more images for a single generation run.</small>
+              </label>
+              <label class="upload-card">
+                <span>Single video</span>
+                <input id="videoUploadInput" type="file" accept="video/*" />
+                <small>Only one video is allowed per run.</small>
+              </label>
+            </div>
+
+            <div id="assetSummary" class="asset-summary empty-state">
+              No assets selected yet. Upload one image set or one video before generating.
+            </div>
+
+            <section class="target-stack">
+              <div class="section-head compact-head">
+                <div>
+                  <p class="eyebrow">Template</p>
+                  <h4>Generation mode</h4>
+                </div>
+              </div>
+              <div id="generationTypeList" class="target-list mode-list"></div>
+            </section>
+
+            <section class="target-stack">
+              <div class="section-head compact-head">
+                <div>
+                  <p class="eyebrow">Signals</p>
+                  <h4>Latest extracted signals</h4>
+                </div>
+              </div>
+              <div id="assetInsightsPanel" class="asset-summary empty-state">
+                Run a generation to inspect extracted dates, rewards, update items, visible text, and trend clues.
+              </div>
+            </section>
+
+            <div class="generate-bar">
+              <div>
+                <p class="eyebrow">Generation</p>
+                <p class="muted-copy">
+                  Uses approved recent post samples only, then matches the closest 3-5 references against uploaded asset extraction.
+                </p>
+                <p class="muted-copy" id="generationModeHint">Mode: local fallback</p>
+              </div>
+              <div class="generate-actions">
+                <button class="secondary-button" id="stopGenerateButton" type="button" hidden>Stop</button>
+                <button class="primary-button" id="generateButton" type="button">Generate</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel stack-section tab-page" id="tabOutputsPage" data-tab-page="outputs" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Outputs</p>
+                <h3>Final channel drafts</h3>
+              </div>
+            </div>
+
+            <div id="outputPanel" class="output-panel"></div>
 
             <div class="section-head compact-head">
               <div>
                 <p class="eyebrow">History</p>
-                <h3>Recent generations</h3>
+                <h4>Recent generations</h4>
               </div>
             </div>
             <div id="historyList" class="history-list"></div>
-            <button class="ghost-button" id="historyToggleButton" type="button" hidden>Show older</button>
+            <button class="secondary-button" id="historyToggleButton" type="button" hidden>Show older</button>
+          </section>
+
+          <section class="panel stack-section tab-page" id="tabPublishPage" data-tab-page="publish" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Publish</p>
+                <h3>Metricool publish</h3>
+              </div>
+            </div>
+
+            <div class="publish-box">
+              <div class="field-grid compact-grid">
+                <label class="field">
+                  <span>Output</span>
+                  <select id="publishOutputSelect"></select>
+                </label>
+                <label class="field">
+                  <span>Target channel</span>
+                  <select id="publishAccountSelect"></select>
+                </label>
+                <label class="field">
+                  <span>Schedule time</span>
+                  <input id="publishScheduleInput" type="datetime-local" />
+                </label>
+                <label class="field field-wide">
+                  <span>Publish title</span>
+                  <input id="publishTitleInput" type="text" placeholder="Optional. Used when the selected channel needs a title." />
+                </label>
+              </div>
+              <p class="muted-copy publish-target-note" id="publishTargetNote"></p>
+              <p class="muted-copy publish-note">
+                Immediate publishing submits the selected output to Metricool now. Scheduled publishing depends on this app server staying online so the queued job can be submitted on time.
+              </p>
+              <div class="publish-actions">
+                <button class="secondary-button" id="publishScheduleButton" type="button">Schedule</button>
+                <button class="primary-button" id="publishNowButton" type="button">Publish</button>
+              </div>
+            </div>
+
+            <div class="section-head compact-head">
+              <div>
+                <p class="eyebrow">Queue</p>
+                <h4>Recent publish jobs</h4>
+              </div>
+            </div>
+            <div id="publishJobsList" class="history-list"></div>
           </section>
         </section>
       </main>
     </div>
 
-    <template id="accountCardTemplate">
-      <article class="account-card">
-        <div class="account-card-head">
-          <div class="account-preview"></div>
-          <div class="account-card-actions">
-            <label class="toggle">
-              <input class="account-enabled" type="checkbox" />
-              <span>Publish via Metricool</span>
-            </label>
-          </div>
-        </div>
-        <div class="field-grid compact-grid">
-          <div class="field">
-            <span>Connected account</span>
-            <p class="static-value account-connected-channel"></p>
-          </div>
-          <div class="field">
-            <span>Metricool network</span>
-            <p class="static-value account-network"></p>
-          </div>
-          <div class="field field-wide account-routing-field">
-            <span>Metricool routing</span>
-            <p class="muted-copy account-metricool-status"></p>
-          </div>
-        </div>
-      </article>
-    </template>
+    <div class="toast" id="toast" hidden></div>
 
     <script src="/app.js" type="module"></script>
   </body>
-  </html>
+</html>

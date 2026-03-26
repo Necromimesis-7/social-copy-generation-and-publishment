@@ -6,6 +6,12 @@ import {
   sanitizeAssetInsights,
 } from "./fallback-generator.mjs";
 import { buildStyleProfile, selectReferenceSamples } from "./sample-reference.mjs";
+import {
+  buildTargetListText,
+  formatGenerationTypeLabel,
+  getGenerationTargets,
+  getTargetKey,
+} from "./target-outputs.mjs";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -192,7 +198,7 @@ function formatGenerationModeInstructions(generationType, trendContext) {
   ].join("\n");
 }
 
-function buildGenerationPrompt({ samples, assetInsights, generationType, trendContext, styleProfile }) {
+function buildGenerationPrompt({ samples, assetInsights, generationType, trendContext, styleProfile, targets }) {
   return [
     "You are writing English social copy for a game brand.",
     "Use only these sources of truth:",
@@ -202,13 +208,18 @@ function buildGenerationPrompt({ samples, assetInsights, generationType, trendCo
     "Return valid JSON only. No markdown fences.",
     "",
     "JSON schema:",
-    '{ "general_candidates": [ { "label": "Candidate 1", "body": "..." } ] }',
+    '{ "platform_outputs": [ { "platform": "X", "account_label": "@brand", "title": null, "body": "..." } ] }',
     "",
     "Requirements:",
-    "- Return 2 or 3 candidates.",
-    "- Each body must be finished, publishable copy.",
+    "- Return exactly one output item for each target channel listed below.",
+    "- Keep the same channel order as the target list.",
+    "- For YouTube, return both title and body.",
+    "- For every other platform, set title to null and return one publishable body.",
     "- Keep the language natural and specific.",
     "- Do not include explanations outside the JSON.",
+    "",
+    "Target channels:",
+    buildTargetListText(targets),
     "",
     formatGenerationModeInstructions(generationType, trendContext),
     "",
@@ -306,21 +317,31 @@ function parseJsonObject(text) {
   return JSON.parse(raw);
 }
 
-function mergeWithFallback({ fallbackPackage, parsed }) {
-  const generalCandidates = Array.isArray(parsed.general_candidates)
-    ? parsed.general_candidates.filter((item) => item?.body)
+function mergeWithFallback({ targets, fallbackPackage, parsed }) {
+  const parsedOutputs = Array.isArray(parsed.platform_outputs)
+    ? parsed.platform_outputs.filter((item) => item?.platform && item?.body)
     : [];
-  const fallbackGeneral = fallbackPackage.outputs.filter((item) => item.platform === "general");
-  const finalGeneral = generalCandidates.length ? generalCandidates : fallbackGeneral;
+  const parsedByKey = new Map(parsedOutputs.map((item) => [getTargetKey({ platform: item.platform, accountLabel: item.account_label }), item]));
+  const parsedByPlatform = new Map(parsedOutputs.map((item) => [item.platform, item]));
+  const fallbackByKey = new Map(
+    (fallbackPackage.outputs || []).map((item) => [getTargetKey({ platform: item.platform, accountLabel: item.accountLabel, accountId: item.accountId }), item]),
+  );
 
-  return finalGeneral.slice(0, 3).map((candidate, index) => ({
-    platform: "general",
-    accountId: null,
-    accountLabel: "",
-    candidateIndex: index,
-    title: null,
-    body: candidate.body,
-  }));
+  return targets.map((target, index) => {
+    const source =
+      parsedByKey.get(getTargetKey(target))
+      || (targets.filter((item) => item.platform === target.platform).length === 1 ? parsedByPlatform.get(target.platform) : null)
+      || fallbackByKey.get(getTargetKey(target));
+
+    return {
+      platform: target.platform,
+      accountId: target.accountId,
+      accountLabel: target.accountLabel,
+      candidateIndex: index,
+      title: target.platform === "YouTube" ? source?.title || null : null,
+      body: source?.body || "",
+    };
+  }).filter((item) => item.body);
 }
 
 function normalizeInsights(parsed, generationType, trendContext) {
@@ -366,10 +387,6 @@ async function callGatewayJson({ prompt, signal, assets = [], uploadsRoot = "", 
   return parseJsonObject(extractMessageText(payload));
 }
 
-function formatGenerationTypeLabel(generationType) {
-  return generationType.charAt(0).toUpperCase() + generationType.slice(1);
-}
-
 export async function generateDraftPackageWithGateway({
   project,
   samples,
@@ -381,6 +398,13 @@ export async function generateDraftPackageWithGateway({
 }) {
   if (!process.env.GATEWAY_API_KEY) {
     throw new Error("GATEWAY_API_KEY is not set.");
+  }
+
+  const targets = getGenerationTargets(project);
+  if (!targets.length) {
+    const error = new Error("Sync a Metricool brand with at least one supported channel before generating copy.");
+    error.statusCode = 400;
+    throw error;
   }
 
   let assetInsights = buildFallbackAssetInsights({ assets, generationType, trendContext });
@@ -426,6 +450,7 @@ export async function generateDraftPackageWithGateway({
       generationType,
       trendContext,
       styleProfile,
+      targets,
     }),
     signal,
     generationType,
@@ -448,6 +473,6 @@ export async function generateDraftPackageWithGateway({
     assetSummary: formatAssetInsightSummary(assetInsights),
     assetInsights,
     sampleCount: referenceSamples.length,
-    outputs: mergeWithFallback({ fallbackPackage, parsed: parsedCopy }),
+    outputs: mergeWithFallback({ targets, fallbackPackage, parsed: parsedCopy }),
   };
 }

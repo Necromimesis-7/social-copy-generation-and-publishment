@@ -1,4 +1,5 @@
 import { buildStyleProfile, selectReferenceSamples } from "./sample-reference.mjs";
+import { formatGenerationTypeLabel, getGenerationTargets, normalizeGenerationType } from "./target-outputs.mjs";
 
 function excerpt(text, maxLength = 140) {
   const clean = String(text || "").replace(/\s+/g, " ").trim();
@@ -150,30 +151,131 @@ function isTechnicalMetadataLine(value) {
   );
 }
 
-function normalizeGenerationType(generationType) {
-  if (["update", "trending", "general"].includes(generationType)) {
-    return generationType;
-  }
-
-  return "general";
+function joinSentences(parts = []) {
+  return parts
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-function formatGenerationTypeLabel(generationType) {
-  const resolved = normalizeGenerationType(generationType);
-  return resolved.charAt(0).toUpperCase() + resolved.slice(1);
-}
-
-function buildStyleCue(samples) {
-  if (!samples.length) {
-    return "No recent post reference text was available.";
+function truncateAtWord(value, maxLength) {
+  const clean = normalizeInlineText(value);
+  if (clean.length <= maxLength) {
+    return clean;
   }
 
-  const excerptList = samples
-    .slice(0, 3)
-    .map((sample) => excerpt(sample.body, 120))
-    .filter(Boolean);
+  return `${clean.slice(0, maxLength - 1).replace(/\s+\S*$/, "").trimEnd()}…`;
+}
 
-  return excerptList.length ? excerptList.join(" | ") : "No recent post reference text was available.";
+function buildFactSentence(prefix, values = [], limit = 3) {
+  const picked = dedupe(values).slice(0, limit);
+  if (!picked.length) {
+    return "";
+  }
+
+  return `${prefix}: ${picked.join(" | ")}.`;
+}
+
+function buildCoreNarrative({ generationType, assetInsights, trendContext }) {
+  const summary = getCopyReadySummary(assetInsights) || assetInsights.keyDetails[0] || assetInsights.visibleText[0] || "";
+
+  if (generationType === "update") {
+    return {
+      lead: summary || assetInsights.updateItems[0] || "Fresh update details are live.",
+      support: buildFactSentence("What is live", assetInsights.updateItems.length ? assetInsights.updateItems : assetInsights.keyDetails),
+      reward: buildFactSentence("Rewards", assetInsights.rewards),
+      timing: buildFactSentence("Timing", assetInsights.dates, 2),
+      details: buildFactSentence("Key details", assetInsights.keyDetails, 3),
+    };
+  }
+
+  if (generationType === "trending") {
+    return {
+      lead: summary || trendContext?.summary || "A live trend angle is ready to use.",
+      support: trendContext?.summary ? `Trend hook: ${trendContext.summary}` : "",
+      reward: buildFactSentence("Game-side detail", assetInsights.keyDetails, 3),
+      timing: buildFactSentence("Timing", assetInsights.dates, 2),
+      details: buildFactSentence("Visible text", assetInsights.visibleText, 2),
+    };
+  }
+
+  return {
+    lead: summary || "Fresh material is ready.",
+    support: buildFactSentence("Key detail", assetInsights.keyDetails, 3),
+    reward: buildFactSentence("Highlights", assetInsights.rewards, 3),
+    timing: buildFactSentence("Timing", assetInsights.dates, 2),
+    details: buildFactSentence("Visible text", assetInsights.visibleText, 2),
+  };
+}
+
+function buildYoutubeTitle(core) {
+  const base = core.lead || core.support || "New update details";
+  return truncateAtWord(base.replace(/[.]+$/g, ""), 92);
+}
+
+function buildPlatformCopy({ platform, core }) {
+  if (platform === "YouTube") {
+    return {
+      title: buildYoutubeTitle(core),
+      body: [
+        core.lead,
+        joinSentences([core.support, core.reward, core.timing]),
+        core.details,
+      ]
+        .filter(Boolean)
+        .join("\n\n")
+        .trim(),
+    };
+  }
+
+  if (platform === "Instagram") {
+    return {
+      title: null,
+      body: [
+        core.lead,
+        joinSentences([core.support, core.reward]),
+        core.timing || core.details,
+      ]
+        .filter(Boolean)
+        .join("\n\n")
+        .trim(),
+    };
+  }
+
+  if (platform === "TikTok") {
+    return {
+      title: null,
+      body: truncateAtWord(joinSentences([core.lead, core.reward || core.support, core.timing]), 220),
+    };
+  }
+
+  return {
+    title: null,
+    body: truncateAtWord(joinSentences([core.lead, core.support || core.reward, core.timing]), 250),
+  };
+}
+
+function buildPlatformOutputs({ project, generationType, assetInsights, trendContext }) {
+  const targets = getGenerationTargets(project);
+  const core = buildCoreNarrative({ generationType, assetInsights, trendContext });
+
+  return targets.map((target, index) => {
+    const copy = buildPlatformCopy({
+      platform: target.platform,
+      core,
+    });
+
+    return {
+      platform: target.platform,
+      accountId: target.accountId,
+      accountLabel: target.accountLabel,
+      candidateIndex: index,
+      title: copy.title || null,
+      body: copy.body || core.lead || "",
+    };
+  });
 }
 
 function describeImageAsset(asset) {
@@ -291,111 +393,6 @@ function getCopyReadySummary(assetInsights) {
   return isReadableSignalText(assetInsights?.summary) ? normalizeInlineText(assetInsights.summary) : "";
 }
 
-function buildUpdateCandidates({ samples, assetInsights, styleProfile }) {
-  const headline = assetInsights.updateItems[0] || assetInsights.keyDetails[0] || getCopyReadySummary(assetInsights) || "Fresh update details are in.";
-  const dateLine = assetInsights.dates.length ? `Dates to note: ${assetInsights.dates.slice(0, 2).join(" | ")}.` : "";
-  const rewardLine = assetInsights.rewards.length ? `Rewards in focus: ${assetInsights.rewards.slice(0, 2).join(" | ")}.` : "";
-  const detailLines = toSentenceList(assetInsights.keyDetails.slice(0, 3));
-
-  return [
-    {
-      label: "Update candidate 1",
-      body: [
-        headline,
-        dateLine,
-        rewardLine,
-        ...detailLines,
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    },
-    {
-      label: "Update candidate 2",
-      body: [
-        getCopyReadySummary(assetInsights) || "Latest update snapshot is ready.",
-        assetInsights.updateItems.length ? `What is changing: ${assetInsights.updateItems.slice(0, 3).join(" | ")}.` : "",
-        assetInsights.rewards.length ? `Rewards: ${assetInsights.rewards.slice(0, 3).join(" | ")}.` : "",
-        assetInsights.dates.length ? `Timing: ${assetInsights.dates.slice(0, 2).join(" | ")}.` : "",
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    },
-  ];
-}
-
-function buildTrendingCandidates({ samples, assetInsights, trendContext, styleProfile }) {
-  const trendLine = trendContext?.summary || "No live trend context was available.";
-  const sourceLine = trendContext?.sources?.length
-    ? `Reference sources: ${trendContext.sources.slice(0, 3).map((item) => item.title).join(" | ")}`
-    : "";
-  const copyReadySummary = getCopyReadySummary(assetInsights);
-
-  return [
-    {
-      label: "Trending candidate 1",
-      body: [
-        trendLine,
-        assetInsights.keyDetails.length ? `Game-side hook: ${assetInsights.keyDetails.slice(0, 3).join(" | ")}` : copyReadySummary,
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    },
-    {
-      label: "Trending candidate 2",
-      body: [
-        `Trend angle: ${trendLine}`,
-        sourceLine,
-        assetInsights.visibleText.length ? `Visible asset text: ${assetInsights.visibleText.slice(0, 2).join(" | ")}` : copyReadySummary,
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    },
-  ];
-}
-
-function buildGeneralCandidates({ samples, assetInsights, styleProfile }) {
-  const copyReadySummary = getCopyReadySummary(assetInsights);
-  const lead = assetInsights.keyDetails[0] || assetInsights.visibleText[0] || copyReadySummary || "Fresh material is ready.";
-  const detailLine = assetInsights.keyDetails.length > 1
-    ? assetInsights.keyDetails.slice(1, 4).join(" | ")
-    : assetInsights.visibleText.slice(0, 2).join(" | ");
-
-  return [
-    {
-      label: "General candidate 1",
-      body: [
-        lead,
-        detailLine,
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    },
-    {
-      label: "General candidate 2",
-      body: [
-        copyReadySummary || lead,
-        assetInsights.visibleText.length ? `Visible text: ${assetInsights.visibleText.slice(0, 2).join(" | ")}` : "",
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    },
-  ];
-}
-
-function buildCandidates({ generationType, samples, assetInsights, trendContext, styleProfile }) {
-  const resolved = normalizeGenerationType(generationType);
-
-  if (resolved === "update") {
-    return buildUpdateCandidates({ samples, assetInsights, styleProfile });
-  }
-
-  if (resolved === "trending") {
-    return buildTrendingCandidates({ samples, assetInsights, trendContext, styleProfile });
-  }
-
-  return buildGeneralCandidates({ samples, assetInsights, styleProfile });
-}
-
 export function buildFallbackDraftPackage({
   project,
   samples,
@@ -426,12 +423,11 @@ export function buildFallbackDraftPackage({
     limit: 5,
   });
   const styleProfile = buildStyleProfile(referenceSamples);
-  const candidates = buildCandidates({
+  const outputs = buildPlatformOutputs({
+    project,
     generationType,
-    samples: referenceSamples,
     assetInsights,
     trendContext,
-    styleProfile,
   });
 
   return {
@@ -446,13 +442,6 @@ export function buildFallbackDraftPackage({
     assetSummary: formatAssetInsightSummary(assetInsights, fallbackReason),
     assetInsights,
     sampleCount: referenceSamples.length,
-    outputs: candidates.map((candidate, index) => ({
-      platform: "general",
-      accountId: null,
-      accountLabel: "",
-      candidateIndex: index,
-      title: null,
-      body: candidate.body,
-    })),
+    outputs,
   };
 }

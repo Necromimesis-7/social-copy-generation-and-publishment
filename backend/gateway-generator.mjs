@@ -3,6 +3,7 @@ import {
   buildFallbackDraftPackage,
   formatAssetInsightSummary,
   hasMeaningfulUpdateSignals,
+  sanitizeAssetInsights,
 } from "./fallback-generator.mjs";
 import { buildStyleProfile, selectReferenceSamples } from "./sample-reference.mjs";
 import { execFileSync } from "node:child_process";
@@ -323,7 +324,7 @@ function mergeWithFallback({ fallbackPackage, parsed }) {
 }
 
 function normalizeInsights(parsed, generationType, trendContext) {
-  return {
+  return sanitizeAssetInsights({
     generationType,
     summary: String(parsed.summary || "").trim(),
     mediaBreakdown: Array.isArray(parsed.media_breakdown) ? parsed.media_breakdown.filter(Boolean) : [],
@@ -339,7 +340,7 @@ function normalizeInsights(parsed, generationType, trendContext) {
           sources: trendContext.sources || [],
         }
       : null,
-  };
+  });
 }
 
 async function callGatewayJson({ prompt, signal, assets = [], uploadsRoot = "", generationType = "general" }) {

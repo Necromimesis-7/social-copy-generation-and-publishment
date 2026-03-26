@@ -26,6 +26,103 @@ function dedupe(values = []) {
   });
 }
 
+function normalizeInlineText(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .replace(/[|•]+/g, " ")
+    .trim();
+}
+
+function isReadableSignalText(value) {
+  const text = normalizeInlineText(value);
+  if (!text) {
+    return false;
+  }
+
+  if (isTechnicalMetadataLine(text)) {
+    return false;
+  }
+
+  const semanticHint = /\b(update|patch|maintenance|event|season|reward|giveaway|battle\s*pass|premium|ticket|bonus|drop|drops|today|tomorrow|weekend|week|monday|tuesday|wednesday|thursday|friday|saturday|sunday|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b/i.test(
+    text,
+  ) || /\b\d{1,2}:\d{2}\s*(am|pm)\b/i.test(text) || /\b\d{1,2}\/\d{1,2}\b/.test(text);
+
+  const words = text.match(/[A-Za-z]{2,}/g) || [];
+  const longerWords = words.filter((word) => word.length >= 4);
+  const shortWords = words.filter((word) => word.length <= 2);
+  const alphaChars = (text.match(/[A-Za-z]/g) || []).length;
+  const vowelChars = (text.match(/[AEIOUaeiou]/g) || []).length;
+  const symbolChars = (text.match(/[^A-Za-z0-9\s]/g) || []).length;
+  const vowelRatio = vowelChars / Math.max(alphaChars, 1);
+  const shortWordRatio = shortWords.length / Math.max(words.length, 1);
+  const longWordRatio = longerWords.length / Math.max(words.length, 1);
+
+  if (semanticHint) {
+    return true;
+  }
+
+  if (words.length < 3) {
+    return false;
+  }
+
+  if (text.length > 180) {
+    return false;
+  }
+
+  if (vowelRatio < 0.24) {
+    return false;
+  }
+
+  if (shortWordRatio > 0.34) {
+    return false;
+  }
+
+  if (longWordRatio < 0.28) {
+    return false;
+  }
+
+  if (symbolChars / Math.max(text.length, 1) > 0.18) {
+    return false;
+  }
+
+  return true;
+}
+
+function sanitizeInsightList(values = [], limit = 8) {
+  return dedupe(values.map(normalizeInlineText).filter(isReadableSignalText)).slice(0, limit);
+}
+
+export function sanitizeAssetInsights(assetInsights = null, fallbackSummary = "") {
+  const raw = assetInsights && typeof assetInsights === "object" ? assetInsights : {};
+  const mediaBreakdown = dedupe(Array.isArray(raw.mediaBreakdown) ? raw.mediaBreakdown : []);
+  const visibleText = sanitizeInsightList(raw.visibleText, 8);
+  const keyDetails = sanitizeInsightList(raw.keyDetails, 8);
+  const dates = sanitizeInsightList(raw.dates, 6);
+  const rewards = sanitizeInsightList(raw.rewards, 6);
+  const updateItems = sanitizeInsightList(raw.updateItems, 6);
+  const trendClues = sanitizeInsightList(raw.trendClues, 6);
+  const summary = isReadableSignalText(raw.summary)
+    ? normalizeInlineText(raw.summary)
+    : keyDetails.length
+      ? `Detected key media details: ${keyDetails.slice(0, 3).join(" | ")}.`
+      : visibleText.length
+        ? `Detected visible text: ${visibleText.slice(0, 2).join(" | ")}.`
+        : fallbackSummary || normalizeInlineText(raw.summary);
+
+  return {
+    generationType: raw.generationType || "general",
+    summary,
+    mediaBreakdown,
+    visibleText,
+    keyDetails,
+    dates,
+    rewards,
+    updateItems,
+    trendClues,
+    trendContext: raw.trendContext || null,
+  };
+}
+
 function collectSignalArray(assets, key) {
   return dedupe(
     assets.flatMap((asset) => {
@@ -43,6 +140,7 @@ function isTechnicalMetadataLine(value) {
 
   return (
     /^media metadata only:/.test(text) ||
+    /^(image|video)\s+source:/.test(text) ||
     /^\d{2,5}x\d{2,5}(?:\s*[•|-]\s*)?/.test(text) ||
     /^(image|video)\//.test(text) ||
     /\b\d+(\.\d+)?\s*(kb|mb|gb)\b/.test(text) ||
@@ -131,7 +229,7 @@ export function buildFallbackAssetInsights({ assets = [], generationType = "gene
   );
   const summary = signalSummaries[0] || buildAssetSummary(assets);
 
-  return {
+  return sanitizeAssetInsights({
     generationType: normalizeGenerationType(generationType),
     summary,
     mediaBreakdown: dedupe(
@@ -152,7 +250,7 @@ export function buildFallbackAssetInsights({ assets = [], generationType = "gene
           sources: trendContext.sources || [],
         }
       : null,
-  };
+  }, buildAssetSummary(assets));
 }
 
 export function formatAssetInsightSummary(assetInsights, fallbackReason = "") {
@@ -189,24 +287,24 @@ export function hasMeaningfulUpdateSignals(assetInsights = null) {
   return (assetInsights.keyDetails || []).some((item) => !isTechnicalMetadataLine(item));
 }
 
+function getCopyReadySummary(assetInsights) {
+  return isReadableSignalText(assetInsights?.summary) ? normalizeInlineText(assetInsights.summary) : "";
+}
+
 function buildUpdateCandidates({ samples, assetInsights, styleProfile }) {
-  const sampleLead = samples[0]?.body ? excerpt(samples[0].body, 180) : "";
-  const factualLines = [
-    ...toSentenceList(assetInsights.dates),
-    ...toSentenceList(assetInsights.updateItems),
-    ...toSentenceList(assetInsights.rewards),
-    ...toSentenceList(assetInsights.keyDetails.slice(0, 4)),
-  ];
+  const headline = assetInsights.updateItems[0] || assetInsights.keyDetails[0] || getCopyReadySummary(assetInsights) || "Fresh update details are in.";
+  const dateLine = assetInsights.dates.length ? `Dates to note: ${assetInsights.dates.slice(0, 2).join(" | ")}.` : "";
+  const rewardLine = assetInsights.rewards.length ? `Rewards in focus: ${assetInsights.rewards.slice(0, 2).join(" | ")}.` : "";
+  const detailLines = toSentenceList(assetInsights.keyDetails.slice(0, 3));
 
   return [
     {
       label: "Update candidate 1",
       body: [
-        sampleLead ? `Reference tone: ${sampleLead}` : "",
-        styleProfile?.summary ? `Style profile: ${styleProfile.summary}` : "",
-        "Update format:",
-        ...factualLines,
-        assetInsights.visibleText.length ? `Visible text reference: ${assetInsights.visibleText.slice(0, 2).join(" | ")}` : "",
+        headline,
+        dateLine,
+        rewardLine,
+        ...detailLines,
       ]
         .filter(Boolean)
         .join("\n"),
@@ -214,11 +312,10 @@ function buildUpdateCandidates({ samples, assetInsights, styleProfile }) {
     {
       label: "Update candidate 2",
       body: [
-        "Latest update snapshot:",
-        assetInsights.summary,
-        assetInsights.keyDetails.length ? `Confirmed details: ${assetInsights.keyDetails.slice(0, 5).join(" | ")}` : "",
-        assetInsights.rewards.length ? `Rewards: ${assetInsights.rewards.join(" | ")}` : "",
-        assetInsights.dates.length ? `Timing: ${assetInsights.dates.join(" | ")}` : "",
+        getCopyReadySummary(assetInsights) || "Latest update snapshot is ready.",
+        assetInsights.updateItems.length ? `What is changing: ${assetInsights.updateItems.slice(0, 3).join(" | ")}.` : "",
+        assetInsights.rewards.length ? `Rewards: ${assetInsights.rewards.slice(0, 3).join(" | ")}.` : "",
+        assetInsights.dates.length ? `Timing: ${assetInsights.dates.slice(0, 2).join(" | ")}.` : "",
       ]
         .filter(Boolean)
         .join("\n"),
@@ -227,20 +324,18 @@ function buildUpdateCandidates({ samples, assetInsights, styleProfile }) {
 }
 
 function buildTrendingCandidates({ samples, assetInsights, trendContext, styleProfile }) {
-  const styleCue = buildStyleCue(samples);
   const trendLine = trendContext?.summary || "No live trend context was available.";
   const sourceLine = trendContext?.sources?.length
     ? `Reference sources: ${trendContext.sources.slice(0, 3).map((item) => item.title).join(" | ")}`
     : "";
+  const copyReadySummary = getCopyReadySummary(assetInsights);
 
   return [
     {
       label: "Trending candidate 1",
       body: [
-        `Live trend hook: ${trendLine}`,
-        styleProfile?.summary ? `Style profile: ${styleProfile.summary}` : "",
-        `Game-side details: ${assetInsights.keyDetails.slice(0, 4).join(" | ") || assetInsights.summary}`,
-        `Recent post style cues: ${styleCue}`,
+        trendLine,
+        assetInsights.keyDetails.length ? `Game-side hook: ${assetInsights.keyDetails.slice(0, 3).join(" | ")}` : copyReadySummary,
       ]
         .filter(Boolean)
         .join("\n"),
@@ -250,8 +345,7 @@ function buildTrendingCandidates({ samples, assetInsights, trendContext, stylePr
       body: [
         `Trend angle: ${trendLine}`,
         sourceLine,
-        assetInsights.visibleText.length ? `Visible asset text: ${assetInsights.visibleText.slice(0, 2).join(" | ")}` : "",
-        assetInsights.summary,
+        assetInsights.visibleText.length ? `Visible asset text: ${assetInsights.visibleText.slice(0, 2).join(" | ")}` : copyReadySummary,
       ]
         .filter(Boolean)
         .join("\n"),
@@ -260,17 +354,18 @@ function buildTrendingCandidates({ samples, assetInsights, trendContext, stylePr
 }
 
 function buildGeneralCandidates({ samples, assetInsights, styleProfile }) {
-  const sampleLead = samples[0]?.body ? excerpt(samples[0].body, 180) : "";
-  const styleCue = buildStyleCue(samples);
+  const copyReadySummary = getCopyReadySummary(assetInsights);
+  const lead = assetInsights.keyDetails[0] || assetInsights.visibleText[0] || copyReadySummary || "Fresh material is ready.";
+  const detailLine = assetInsights.keyDetails.length > 1
+    ? assetInsights.keyDetails.slice(1, 4).join(" | ")
+    : assetInsights.visibleText.slice(0, 2).join(" | ");
 
   return [
     {
       label: "General candidate 1",
       body: [
-        sampleLead ? `Reference tone: ${sampleLead}` : "",
-        styleProfile?.summary ? `Style profile: ${styleProfile.summary}` : "",
-        `Asset insight: ${assetInsights.summary}`,
-        assetInsights.keyDetails.length ? `Key details: ${assetInsights.keyDetails.slice(0, 4).join(" | ")}` : "",
+        lead,
+        detailLine,
       ]
         .filter(Boolean)
         .join("\n"),
@@ -278,9 +373,8 @@ function buildGeneralCandidates({ samples, assetInsights, styleProfile }) {
     {
       label: "General candidate 2",
       body: [
-        `Recent post style cues: ${styleCue}`,
+        copyReadySummary || lead,
         assetInsights.visibleText.length ? `Visible text: ${assetInsights.visibleText.slice(0, 2).join(" | ")}` : "",
-        assetInsights.summary,
       ]
         .filter(Boolean)
         .join("\n"),
@@ -311,7 +405,10 @@ export function buildFallbackDraftPackage({
   fallbackReason = "",
   assetInsightsOverride = null,
 }) {
-  const assetInsights = assetInsightsOverride || buildFallbackAssetInsights({ assets, generationType, trendContext });
+  const assetInsights = sanitizeAssetInsights(
+    assetInsightsOverride || buildFallbackAssetInsights({ assets, generationType, trendContext }),
+    buildAssetSummary(assets),
+  );
 
   if (normalizeGenerationType(generationType) === "update" && !hasMeaningfulUpdateSignals(assetInsights)) {
     const error = new Error(

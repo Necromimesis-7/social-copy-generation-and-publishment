@@ -78,6 +78,14 @@ TREND_KEYWORDS = [
     "duet",
 ]
 
+COMMON_WORDS = {
+    "the", "and", "for", "with", "from", "this", "that", "your", "you", "new",
+    "now", "join", "follow", "play", "watch", "live", "event", "update", "reward",
+    "giveaway", "season", "mode", "patch", "today", "tomorrow", "weekend", "week",
+    "claim", "before", "after", "start", "starting", "drop", "drops", "bonus",
+    "battle", "pass", "premium", "lancers", "grind", "gear", "win", "post",
+}
+
 
 def normalize_space(value: str) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
@@ -124,9 +132,16 @@ def looks_like_low_quality_ocr(line: str) -> bool:
     lowered = text.lower()
     alpha_count = sum(1 for char in text if char.isalpha())
     alnum_count = sum(1 for char in text if char.isalnum())
+    words = re.findall(r"[A-Za-z]{2,}", text)
     long_words = re.findall(r"[A-Za-z]{3,}", text)
     stronger_words = re.findall(r"[A-Za-z]{4,}", text)
     symbol_count = sum(1 for char in text if not char.isalnum() and not char.isspace())
+    short_words = [word for word in words if len(word) <= 2]
+    common_word_hits = sum(1 for word in words if word.lower() in COMMON_WORDS)
+    vowel_count = sum(1 for char in text if char.lower() in "aeiou")
+    vowel_ratio = vowel_count / max(alpha_count, 1)
+    short_word_ratio = len(short_words) / max(len(words), 1)
+    strong_word_ratio = len(stronger_words) / max(len(words), 1)
 
     has_semantic_pattern = any(keyword in lowered for keyword in UPDATE_KEYWORDS + REWARD_KEYWORDS + TREND_KEYWORDS) or bool(
         extract_pattern_matches(text, DATE_PATTERNS)
@@ -145,6 +160,18 @@ def looks_like_low_quality_ocr(line: str) -> bool:
         return True
 
     if symbol_count / max(len(text), 1) > 0.18 and not has_semantic_pattern:
+        return True
+
+    if vowel_ratio < 0.24 and not has_semantic_pattern:
+        return True
+
+    if len(words) >= 6 and short_word_ratio > 0.34 and common_word_hits == 0 and not has_semantic_pattern:
+        return True
+
+    if len(words) >= 6 and strong_word_ratio < 0.28 and common_word_hits == 0 and not has_semantic_pattern:
+        return True
+
+    if len(text) > 120 and common_word_hits == 0 and short_word_ratio > 0.24 and not has_semantic_pattern:
         return True
 
     return False

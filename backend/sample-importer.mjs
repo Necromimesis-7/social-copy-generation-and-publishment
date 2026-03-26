@@ -95,6 +95,25 @@ function isLikelyXStatusUrl(url) {
   }
 }
 
+function extractXStatusId(url) {
+  try {
+    const parsed = new URL(url);
+    const match = parsed.pathname.match(/\/status\/(\d+)/i);
+    return match?.[1] || null;
+  } catch {
+    return null;
+  }
+}
+
+function computeXSyndicationToken(id) {
+  const numericId = Number(id);
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return null;
+  }
+
+  return ((numericId / 1e15) * Math.PI).toString(36).replace(/(0+|\.)/g, "");
+}
+
 function parsePublishedAt(value) {
   const text = normalizeWhitespace(value);
   const timeFirstMatch = text.match(
@@ -115,6 +134,88 @@ function parsePublishedAt(value) {
 
   const parsed = new Date(normalizedTimestamp);
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+function normalizeXSyndicationText(payload) {
+  const noteText =
+    payload?.note_tweet?.note_tweet_results?.result?.text ||
+    payload?.note_tweet?.text ||
+    payload?.full_text ||
+    payload?.text ||
+    "";
+  const text = String(noteText || "");
+  if (!text) {
+    return "";
+  }
+
+  const mediaUrls = new Set();
+  const entities = [payload?.entities, payload?.legacy?.entities].filter(Boolean);
+  for (const entity of entities) {
+    for (const url of entity?.media || []) {
+      if (url?.url) {
+        mediaUrls.add(url.url);
+      }
+    }
+  }
+
+  let cleaned = text;
+  for (const mediaUrl of mediaUrls) {
+    cleaned = cleaned.replaceAll(mediaUrl, " ");
+  }
+
+  return normalizeWhitespace(cleaned);
+}
+
+async function fetchXSyndicationSample(url) {
+  const statusId = extractXStatusId(url);
+  if (!statusId) {
+    return [];
+  }
+
+  const token = computeXSyndicationToken(statusId);
+  if (!token) {
+    return [];
+  }
+
+  const endpoint = new URL("https://cdn.syndication.twimg.com/tweet-result");
+  endpoint.searchParams.set("id", statusId);
+  endpoint.searchParams.set("token", token);
+  endpoint.searchParams.set("lang", "en");
+
+  const signal = AbortSignal.timeout(SAMPLE_IMPORT_TIMEOUT_MS);
+  const response = await fetch(endpoint, {
+    method: "GET",
+    signal,
+    headers: {
+      "user-agent":
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36",
+      accept: "application/json,text/plain;q=0.9,*/*;q=0.8",
+      "accept-language": "en-US,en;q=0.9",
+      "cache-control": "no-cache",
+      referer: "https://x.com/",
+    },
+  });
+
+  if (!response.ok) {
+    return [];
+  }
+
+  const payload = await response.json().catch(() => null);
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+
+  const body = normalizeXSyndicationText(payload);
+  if (!isUsableSampleText(body)) {
+    return [];
+  }
+
+  return [
+    {
+      body,
+      publishedAt: payload.created_at || null,
+    },
+  ];
 }
 
 function findNearDuplicateCandidate(candidates, dedupeKey) {
@@ -569,6 +670,13 @@ async function fetchCleanContent(url) {
 }
 
 export async function importSamplesFromUrl(url, options = {}) {
+  if (isLikelyXStatusUrl(url)) {
+    const xSamples = await fetchXSyndicationSample(url);
+    if (xSamples.length) {
+      return xSamples;
+    }
+  }
+
   const cleanPayload = await fetchCleanContent(url);
   if (cleanPayload?.content) {
     const markdownSamples = extractImportedSamplesFromMarkdown(cleanPayload.content, {

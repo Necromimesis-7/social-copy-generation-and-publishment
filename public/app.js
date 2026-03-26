@@ -35,7 +35,7 @@ const generationModes = [
   },
   {
     id: "trending",
-    title: "Trending",
+    title: "Trending topic",
     description: "For social hot-topic tie-ins after live trend confirmation.",
   },
   {
@@ -242,6 +242,10 @@ function formatReviewStatus(status) {
 function formatGenerationTypeLabel(value) {
   if (value === "update") {
     return "Update & events";
+  }
+
+  if (value === "trending") {
+    return "Trending topic";
   }
 
   return value ? `${value.charAt(0).toUpperCase()}${value.slice(1)}` : "General";
@@ -911,7 +915,7 @@ function renderSamples(project) {
           <select class="sample-type-select">
             <option value="general"${sample.sampleType === "general" ? " selected" : ""}>General</option>
             <option value="update"${sample.sampleType === "update" ? " selected" : ""}>Update &amp; events</option>
-            <option value="trending"${sample.sampleType === "trending" ? " selected" : ""}>Trending</option>
+            <option value="trending"${sample.sampleType === "trending" ? " selected" : ""}>Trending topic</option>
           </select>
         </label>
         <label class="field field-wide">

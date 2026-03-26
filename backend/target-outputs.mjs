@@ -19,6 +19,10 @@ export function formatGenerationTypeLabel(value) {
     return "Update & events";
   }
 
+  if (resolved === "trending") {
+    return "Trending topic";
+  }
+
   return `${resolved.charAt(0).toUpperCase()}${resolved.slice(1)}`;
 }
 

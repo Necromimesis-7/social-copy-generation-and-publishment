@@ -1629,13 +1629,20 @@ async function removeProject(projectId) {
 }
 
 async function generateDrafts() {
+  const initialProject = getActiveProject();
+  if (!initialProject) {
+    return;
+  }
+
+  await saveProjectEdits();
+
   const project = getActiveProject();
   if (!project) {
     return;
   }
 
   if (!getGenerationTargets(project).length) {
-    throw new Error("Sync a Metricool brand with at least one supported channel before generating copy.");
+    throw new Error("Select a Metricool brand with at least one connected channel before generating copy.");
   }
 
   if (!hasSelectedAssets()) {

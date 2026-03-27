@@ -1432,7 +1432,7 @@ async function createGeneration(projectId, req) {
   }
 
   if (!project.accounts?.length) {
-    throw httpError(400, "Sync a Metricool brand with at least one supported channel before generating copy.");
+    throw httpError(400, "Select a Metricool brand with at least one connected channel before generating copy.");
   }
 
   const formData = await readFormData(req);

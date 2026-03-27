@@ -25,8 +25,8 @@ Project-based social copy generator for overseas brand operations.
 - `server.mjs` now serves both the frontend and local JSON APIs
 - SQLite database is stored at `data/app.db`
 - Uploaded files are stored under `data/uploads/`
+- COS direct upload is supported when `COS_ENABLED=true`
 - Uploaded files are also exposed under `/uploads/...` for public-media publishing when `PUBLIC_APP_URL` points to a real HTTPS domain
-- Demo projects are automatically seeded on first run
 - `.env` is loaded automatically if present
 
 ## Current generation behavior
@@ -141,6 +141,36 @@ Notes:
 - On Render, if `PUBLIC_APP_URL` is left blank, the app will automatically fall back to `https://${RENDER_EXTERNAL_HOSTNAME}`.
 - Scheduled publishing depends on this app process staying online. The local dispatcher checks queued jobs every `PUBLISH_POLL_INTERVAL_MS`.
 - Current Metricool integration assumes one connected channel per network inside a Metricool brand. If you manage multiple accounts on the same platform, they usually need separate Metricool brands to publish distinctly.
+
+## COS direct upload setup
+
+For frequent large-video workloads, enable Tencent COS direct upload so the browser sends files straight to COS before generation starts.
+
+Add these values to `.env`:
+
+```bash
+COS_ENABLED=true
+COS_BUCKET=social-studio-1416229279
+COS_REGION=ap-singapore
+COS_SECRET_ID=your_cam_secret_id
+COS_SECRET_KEY=your_cam_secret_key
+COS_UPLOAD_PREFIX=uploads
+COS_PUBLIC_BASE_URL=https://social-studio-1416229279.cos.ap-singapore.myqcloud.com
+COS_DIRECT_UPLOAD_MIN_BYTES=0
+```
+
+Notes:
+
+- Install the new backend dependency after pulling the latest code:
+  - `npm install`
+- The app now exposes `POST /api/uploads/cos-sts` and uses Tencent COS temporary credentials in the browser.
+- Generation requests can reference already-uploaded COS assets, so large videos no longer need to pass through the web server first.
+- Set the bucket to `public-read / private-write` if you want Metricool to fetch uploaded media directly.
+- Configure COS CORS to allow your site origins, such as:
+  - `http://43.128.96.212`
+  - `http://localhost:4175`
+- `COS_REGION` should use the API region format, for example `ap-singapore`.
+- `COS_DIRECT_UPLOAD_MIN_BYTES=0` means all selected assets use COS direct upload when configured. Raise it later if you only want big files to go through COS.
 
 ## Deploy publicly
 

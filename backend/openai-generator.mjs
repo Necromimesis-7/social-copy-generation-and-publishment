@@ -17,6 +17,7 @@ import {
   getGenerationTargets,
   getTargetKey,
 } from "./target-outputs.mjs";
+import { resolveAssetAbsolutePath } from "./asset-paths.mjs";
 
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5-mini";
@@ -120,7 +121,7 @@ function buildVisionPreviewPath(absolutePath, generationType, fallbackMimeType) 
 }
 
 function appendImageInput(items, uploadsRoot, imageAsset, generationType) {
-  const absolutePath = join(uploadsRoot, imageAsset.storagePath);
+  const absolutePath = resolveAssetAbsolutePath(imageAsset, uploadsRoot);
   if (!existsSync(absolutePath)) {
     return;
   }

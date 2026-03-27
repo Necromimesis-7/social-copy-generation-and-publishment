@@ -192,6 +192,10 @@
                   Uses approved recent post samples only, then matches the closest 3-5 references against uploaded asset extraction.
                 </p>
                 <p class="muted-copy" id="generationModeHint">Mode: local fallback</p>
+                <p class="muted-copy generation-status-hint" id="generationStatusHint" hidden></p>
+                <div class="generation-progress" id="generationProgress" hidden>
+                  <div class="generation-progress-fill" id="generationProgressFill"></div>
+                </div>
               </div>
               <div class="generate-actions">
                 <button class="secondary-button" id="stopGenerateButton" type="button" hidden>Stop</button>
@@ -271,6 +275,7 @@
 
     <div class="toast" id="toast" hidden></div>
 
+    <script src="https://cdn.jsdelivr.net/npm/cos-js-sdk-v5/dist/cos-js-sdk-v5.min.js"></script>
     <script src="/app.js" type="module"></script>
   </body>
 </html>

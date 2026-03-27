@@ -12,6 +12,7 @@ import {
   getGenerationTargets,
   getTargetKey,
 } from "./target-outputs.mjs";
+import { resolveAssetAbsolutePath } from "./asset-paths.mjs";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -123,7 +124,7 @@ function buildVisionPreviewPath(absolutePath, generationType, fallbackMimeType) 
 }
 
 function appendImageInput(items, uploadsRoot, imageAsset, generationType) {
-  const absolutePath = join(uploadsRoot, imageAsset.storagePath);
+  const absolutePath = resolveAssetAbsolutePath(imageAsset, uploadsRoot);
   if (!existsSync(absolutePath)) {
     return;
   }

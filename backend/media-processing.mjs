@@ -6,6 +6,9 @@ const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "https://api.openai.com/v
 const OPENAI_TRANSCRIPTION_MODEL = process.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe";
 const OPENAI_TRANSCRIPTION_MAX_BYTES = Number(process.env.OPENAI_TRANSCRIPTION_MAX_BYTES || 25 * 1024 * 1024);
 const MAX_VIDEO_FRAMES = Math.max(3, Number(process.env.MAX_VIDEO_FRAMES || 12));
+const LARGE_VIDEO_BYTES = Math.max(50 * 1024 * 1024, Number(process.env.LARGE_VIDEO_BYTES || 100 * 1024 * 1024));
+const HUGE_VIDEO_BYTES = Math.max(LARGE_VIDEO_BYTES, Number(process.env.HUGE_VIDEO_BYTES || 250 * 1024 * 1024));
+const MASSIVE_VIDEO_BYTES = Math.max(HUGE_VIDEO_BYTES, Number(process.env.MASSIVE_VIDEO_BYTES || 500 * 1024 * 1024));
 
 const directTranscriptionExtensions = new Set([".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm"]);
 
@@ -273,7 +276,17 @@ function extractMediaSignals({
     args.push("--duration", String(metadata.durationSeconds));
   }
 
-  derivedImages.slice(0, 8).forEach((frame) => {
+  const signalFrameLimit = asset.assetType === "video"
+    ? asset.sizeBytes >= MASSIVE_VIDEO_BYTES
+      ? 3
+      : asset.sizeBytes >= HUGE_VIDEO_BYTES
+        ? 4
+        : asset.sizeBytes >= LARGE_VIDEO_BYTES
+          ? 6
+          : 8
+    : 8;
+
+  derivedImages.slice(0, signalFrameLimit).forEach((frame) => {
     args.push("--frame", join(uploadsRoot, frame.storagePath));
   });
 
@@ -292,12 +305,12 @@ function extractMediaSignals({
   }
 }
 
-function buildFrameTimestamps(durationSeconds) {
+function buildFrameTimestamps(durationSeconds, sizeBytes = 0) {
   if (!durationSeconds || durationSeconds <= 0) {
     return [0.15, 0.45, 0.8].slice(0, MAX_VIDEO_FRAMES);
   }
 
-  const frameCount = resolveFrameCount(durationSeconds);
+  const frameCount = resolveFrameCount(durationSeconds, sizeBytes);
   const margin = resolveTimelineMargin(durationSeconds);
   const start = Math.min(margin, durationSeconds * 0.18);
   const end = Math.max(durationSeconds - margin, start + 0.15);
@@ -313,28 +326,35 @@ function buildFrameTimestamps(durationSeconds) {
   });
 }
 
-function resolveFrameCount(durationSeconds) {
+function resolveFrameCount(durationSeconds, sizeBytes = 0) {
+  let frameCount;
   if (durationSeconds <= 6) {
-    return Math.min(MAX_VIDEO_FRAMES, 4);
+    frameCount = Math.min(MAX_VIDEO_FRAMES, 4);
+  } else if (durationSeconds <= 15) {
+    frameCount = Math.min(MAX_VIDEO_FRAMES, 5);
+  } else if (durationSeconds <= 30) {
+    frameCount = Math.min(MAX_VIDEO_FRAMES, 6);
+  } else if (durationSeconds <= 60) {
+    frameCount = Math.min(MAX_VIDEO_FRAMES, 8);
+  } else if (durationSeconds <= 180) {
+    frameCount = Math.min(MAX_VIDEO_FRAMES, 12);
+  } else {
+    frameCount = Math.min(MAX_VIDEO_FRAMES, 14);
   }
 
-  if (durationSeconds <= 15) {
-    return Math.min(MAX_VIDEO_FRAMES, 5);
+  if (sizeBytes >= MASSIVE_VIDEO_BYTES) {
+    return Math.min(frameCount, 4);
   }
 
-  if (durationSeconds <= 30) {
-    return Math.min(MAX_VIDEO_FRAMES, 6);
+  if (sizeBytes >= HUGE_VIDEO_BYTES) {
+    return Math.min(frameCount, 6);
   }
 
-  if (durationSeconds <= 60) {
-    return Math.min(MAX_VIDEO_FRAMES, 8);
+  if (sizeBytes >= LARGE_VIDEO_BYTES) {
+    return Math.min(frameCount, 8);
   }
 
-  if (durationSeconds <= 180) {
-    return Math.min(MAX_VIDEO_FRAMES, 12);
-  }
-
-  return Math.min(MAX_VIDEO_FRAMES, 14);
+  return frameCount;
 }
 
 function resolveTimelineMargin(durationSeconds) {
@@ -361,10 +381,12 @@ function createFrameDescriptor(absolutePath, uploadsRoot) {
   };
 }
 
-function extractFramesWithFfmpeg({ absolutePath, derivedDir, uploadsRoot, durationSeconds }) {
+function extractFramesWithFfmpeg({ absolutePath, derivedDir, uploadsRoot, durationSeconds, sizeBytes = 0 }) {
   mkdirSync(derivedDir, { recursive: true });
-  const timestamps = buildFrameTimestamps(durationSeconds);
+  const timestamps = buildFrameTimestamps(durationSeconds, sizeBytes);
   const frames = [];
+  const targetWidth = sizeBytes >= MASSIVE_VIDEO_BYTES ? 960 : sizeBytes >= HUGE_VIDEO_BYTES ? 1120 : sizeBytes >= LARGE_VIDEO_BYTES ? 1280 : 1440;
+  const quality = sizeBytes >= HUGE_VIDEO_BYTES ? "4" : "3";
 
   timestamps.forEach((timestamp, index) => {
     const targetPath = join(derivedDir, `frame-${index + 1}.jpg`);
@@ -374,10 +396,13 @@ function extractFramesWithFfmpeg({ absolutePath, derivedDir, uploadsRoot, durati
       String(timestamp),
       "-i",
       absolutePath,
+      "-an",
+      "-vf",
+      `scale='min(${targetWidth},iw)':-2`,
       "-frames:v",
       "1",
       "-q:v",
-      "2",
+      quality,
       targetPath,
     ]);
 
@@ -620,6 +645,7 @@ export async function processStoredAsset({ asset, absolutePath, uploadsRoot, pro
       derivedDir,
       uploadsRoot,
       durationSeconds: metadata.durationSeconds,
+      sizeBytes: asset.sizeBytes,
     });
     frameMode = derivedImages.length ? "ffmpeg" : "metadata";
   }

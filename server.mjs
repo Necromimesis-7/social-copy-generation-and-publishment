@@ -1,11 +1,23 @@
 import "./backend/env.mjs";
 
 import { randomUUID } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  createReadStream,
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { extname, join, normalize } from "node:path";
 import http from "node:http";
 import { DatabaseSync } from "node:sqlite";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
+import { getClientCosConfig } from "./backend/cos-config.mjs";
+import { createCosUploadSession } from "./backend/cos-sts.mjs";
 import { generateDraftPackage, getGeneratorMode } from "./backend/generator.mjs";
 import { getVideoProcessingCapabilities, processStoredAsset } from "./backend/media-processing.mjs";
 import {
@@ -184,6 +196,9 @@ function initSchema() {
       asset_type TEXT NOT NULL,
       file_name TEXT NOT NULL,
       storage_path TEXT NOT NULL,
+      storage_provider TEXT NOT NULL DEFAULT 'local',
+      storage_key TEXT NOT NULL DEFAULT '',
+      public_url TEXT NOT NULL DEFAULT '',
       mime_type TEXT NOT NULL,
       size_bytes INTEGER NOT NULL,
       extracted_summary TEXT NOT NULL DEFAULT '',
@@ -249,6 +264,9 @@ function initSchema() {
   ensureColumn("projects", "metricool_brand_channels_json", "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn("project_accounts", "metricool_publish_enabled", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("project_accounts", "metricool_network", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn("assets", "storage_provider", "TEXT NOT NULL DEFAULT 'local'");
+  ensureColumn("assets", "storage_key", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn("assets", "public_url", "TEXT NOT NULL DEFAULT ''");
 }
 
 function seedDatabase() {
@@ -319,17 +337,34 @@ function migrateLegacyPlatformsToAccounts() {
 async function handleApi(req, res, url) {
   const parts = url.pathname.split("/").filter(Boolean);
 
-  if (req.method === "GET" && url.pathname === "/api/health") {
-    sendJson(res, 200, {
-      ok: true,
-      generatorMode: getGeneratorMode(),
-      videoProcessing: getVideoProcessingCapabilities(),
-      metricool: {
-        configured: getMetricoolConfig().configured,
-      },
-    });
-    return;
-  }
+    if (req.method === "GET" && url.pathname === "/api/health") {
+      sendJson(res, 200, {
+        ok: true,
+        generatorMode: getGeneratorMode(),
+        videoProcessing: getVideoProcessingCapabilities(),
+        uploads: {
+          cos: getClientCosConfig(),
+        },
+        metricool: {
+          configured: getMetricoolConfig().configured,
+        },
+      });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/uploads/cos-sts") {
+      const body = await readJson(req);
+      const session = await createCosUploadSession({
+        projectId: String(body?.projectId || "").trim(),
+        fileName: String(body?.fileName || "upload.bin").trim(),
+        assetType: String(body?.assetType || "file").trim(),
+      });
+      sendJson(res, 200, {
+        cos: getClientCosConfig(),
+        session,
+      });
+      return;
+    }
 
   if (req.method === "GET" && url.pathname === "/api/integrations/metricool/brands") {
     const brands = await syncMetricoolBrands();
@@ -407,7 +442,7 @@ async function handleApi(req, res, url) {
 
     if (req.method === "POST" && parts[3] === "generations") {
       await createGeneration(projectId, req);
-      sendAppState(res, 201, projectId);
+      sendAppState(res, 202, projectId);
       return;
     }
 
@@ -436,6 +471,9 @@ function sendAppState(res, statusCode, activeProjectId = null) {
     projects,
     activeProjectId: resolvedActiveId,
     generatorMode: getGeneratorMode(),
+    uploads: {
+      cos: getClientCosConfig(),
+    },
   });
 }
 
@@ -536,6 +574,57 @@ function parseJsonObject(value) {
 function sanitizeFileName(value) {
   const clean = String(value || "upload.bin").replace(/[^a-zA-Z0-9._-]/g, "-");
   return clean || "upload.bin";
+}
+
+function isHttpUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function parseUploadedAssetRefs(formData) {
+  const raw = String(formData.get("uploadedAssets") || "").trim();
+  if (!raw) {
+    return [];
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw httpError(400, "Uploaded asset references are invalid.");
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw httpError(400, "Uploaded asset references are invalid.");
+  }
+
+  return parsed.map((item) => {
+    const assetType = item?.assetType === "video" ? "video" : "image";
+    const fileName = sanitizeFileName(item?.fileName || `${assetType}.bin`);
+    const mimeType = String(item?.mimeType || "application/octet-stream").trim() || "application/octet-stream";
+    const sizeBytes = Math.max(0, Number(item?.sizeBytes || 0));
+    const storageProvider = String(item?.storageProvider || "cos").trim() || "cos";
+    const storageKey = String(item?.storageKey || "").trim();
+    const publicUrl = String(item?.publicUrl || "").trim();
+
+    if (!storageKey || !publicUrl || !isHttpUrl(publicUrl)) {
+      throw httpError(400, "Uploaded asset references are incomplete.");
+    }
+
+    return {
+      assetType,
+      fileName,
+      mimeType,
+      sizeBytes,
+      storageProvider,
+      storageKey,
+      publicUrl,
+    };
+  });
 }
 
 function getProjectRow(projectId) {
@@ -936,7 +1025,7 @@ async function buildMetricoolMediaUrls(projectRow, generationId) {
   const publicUrls = assets
     .map((asset) => ({
       type: asset.asset_type,
-      url: buildPublicAssetUrl(asset.storage_path),
+      url: String(asset.public_url || "").trim() || buildPublicAssetUrl(asset.storage_path),
     }))
     .filter((asset) => asset.url);
 
@@ -1441,6 +1530,11 @@ async function createGeneration(projectId, req) {
   const videoFiles = formData
     .getAll("video")
     .filter((item) => item instanceof File && item.size > 0);
+  const uploadedAssetRefs = parseUploadedAssetRefs(formData);
+
+  if (uploadedAssetRefs.length && (imageFiles.length || videoFiles.length)) {
+    throw httpError(400, "Use either uploaded cloud asset references or direct file uploads per generation.");
+  }
 
   if (imageFiles.length && videoFiles.length) {
     throw httpError(400, "Use either multiple images or one video per generation.");
@@ -1450,8 +1544,12 @@ async function createGeneration(projectId, req) {
     throw httpError(400, "Only one video is allowed per generation.");
   }
 
-  if (!imageFiles.length && !videoFiles.length) {
+  if (!imageFiles.length && !videoFiles.length && !uploadedAssetRefs.length) {
     throw httpError(400, "Upload at least one image set or one video before generating.");
+  }
+
+  if (uploadedAssetRefs.filter((asset) => asset.assetType === "video").length > 1) {
+    throw httpError(400, "Only one video is allowed per generation.");
   }
 
   const generationType = normalizeGenerationType(String(formData.get("generationType") || "general"));
@@ -1489,8 +1587,14 @@ async function createGeneration(projectId, req) {
   );
 
   const storedAssets = [];
-
-  try {
+  if (uploadedAssetRefs.length) {
+    uploadedAssetRefs.forEach((uploadedAsset) => {
+      storedAssets.push({
+        ...uploadedAsset,
+        deferredRemote: true,
+      });
+    });
+  } else {
     for (const image of imageFiles) {
       throwIfGenerationCancelled(abortController.signal);
       storedAssets.push(await storeAsset(projectId, generationId, image, "image"));
@@ -1500,14 +1604,77 @@ async function createGeneration(projectId, req) {
       throwIfGenerationCancelled(abortController.signal);
       storedAssets.push(await storeAsset(projectId, generationId, videoFiles[0], "video"));
     }
+  }
+
+  const videoAssetCount = uploadedAssetRefs.length
+    ? uploadedAssetRefs.filter((asset) => asset.assetType === "video").length
+    : videoFiles.length;
+  const imageAssetCount = uploadedAssetRefs.length
+    ? uploadedAssetRefs.filter((asset) => asset.assetType === "image").length
+    : imageFiles.length;
+  const assetMode = videoAssetCount ? "single_video" : imageAssetCount ? "multi_image" : "none";
+  db.prepare(`
+    UPDATE generation_runs
+    SET asset_mode = ?, asset_summary = ?
+    WHERE id = ?
+  `).run(
+    assetMode,
+    uploadedAssetRefs.length ? "Cloud assets linked. Processing on server..." : "Assets uploaded. Processing on server...",
+    generationId,
+  );
+
+  processGenerationInBackground({
+    projectId,
+    project,
+    generationId,
+    generationType,
+    storedAssets,
+    abortController,
+    assetMode,
+  }).catch((error) => {
+    console.error(error);
+  });
+
+  return generationId;
+}
+
+async function processGenerationInBackground({
+  projectId,
+  project,
+  generationId,
+  generationType,
+  storedAssets,
+  abortController,
+  assetMode,
+}) {
+  let preparedAssets = storedAssets;
+  try {
+    if (preparedAssets.some((asset) => asset.deferredRemote)) {
+      db.prepare("UPDATE generation_runs SET asset_summary = ? WHERE id = ?").run(
+        "Downloading uploaded cloud assets...",
+        generationId,
+      );
+      preparedAssets = await Promise.all(
+        preparedAssets.map((asset) =>
+          asset.deferredRemote
+            ? storeReferencedAsset(projectId, generationId, asset, abortController.signal)
+            : asset,
+        ),
+      );
+    }
 
     throwIfGenerationCancelled(abortController.signal);
+    db.prepare("UPDATE generation_runs SET asset_summary = ? WHERE id = ?").run(
+      "Matching approved samples and preparing generation...",
+      generationId,
+    );
+
     const relevantSamples = getRelevantSamples(projectId, generationType, 24);
     const trendContext =
       generationType === "trending"
         ? await researchTrendingContext({
             samples: relevantSamples,
-            assets: storedAssets,
+            assets: preparedAssets,
             signal: abortController.signal,
           })
         : null;
@@ -1519,11 +1686,18 @@ async function createGeneration(projectId, req) {
       );
     }
 
+    db.prepare("UPDATE generation_runs SET asset_summary = ? WHERE id = ?").run(
+      preparedAssets.some((asset) => asset.assetType === "video")
+        ? "Extracting frames and generating copy..."
+        : "Generating copy...",
+      generationId,
+    );
+
     await maybeDelayGeneration(abortController.signal);
     const draftPackage = await generateDraftPackage({
       project,
       samples: relevantSamples,
-      assets: storedAssets,
+      assets: preparedAssets,
       uploadsRoot: uploadRoot,
       generationType,
       trendContext,
@@ -1583,7 +1757,7 @@ async function createGeneration(projectId, req) {
       WHERE id = ?
     `).run(
       cancelled ? "cancelled" : "failed",
-      videoFiles[0] ? "single_video" : imageFiles.length ? "multi_image" : "none",
+      assetMode,
       cancelled ? "Generation cancelled by user." : error.message || "Generation failed",
       "",
       cancelled ? 1 : 0,
@@ -1591,11 +1765,8 @@ async function createGeneration(projectId, req) {
       nowIso(),
       generationId,
     );
-    if (cancelled) {
-      throw httpError(499, "Generation cancelled.");
-    }
-    throw error;
   } finally {
+    cleanupTemporaryAssets(preparedAssets);
     activeGenerations.delete(projectId);
   }
 }
@@ -1628,8 +1799,8 @@ async function storeAsset(projectId, generationId, file, assetType) {
 
   db.prepare(`
     INSERT INTO assets (
-      id, project_id, generation_id, asset_type, file_name, storage_path, mime_type, size_bytes, extracted_summary, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, project_id, generation_id, asset_type, file_name, storage_path, storage_provider, storage_key, public_url, mime_type, size_bytes, extracted_summary, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     assetId,
     projectId,
@@ -1637,13 +1808,106 @@ async function storeAsset(projectId, generationId, file, assetType) {
     assetType,
     safeFileName,
     relativePath,
+    "local",
+    relativePath,
+    "",
     file.type || "application/octet-stream",
     file.size || fileBuffer.byteLength,
     processedAsset.extractedSummary || "",
     timestamp,
   );
 
-  return processedAsset;
+  return {
+    ...processedAsset,
+    storageProvider: "local",
+    storageKey: relativePath,
+    publicUrl: "",
+    absolutePath,
+  };
+}
+
+async function downloadRemoteAssetToLocal(url, targetPath, signal) {
+  const response = await fetch(url, { signal });
+  if (!response.ok || !response.body) {
+    throw httpError(400, `Failed to fetch uploaded cloud asset: ${response.status} ${response.statusText}`);
+  }
+
+  await pipeline(Readable.fromWeb(response.body), createWriteStream(targetPath));
+}
+
+async function storeReferencedAsset(projectId, generationId, assetRef, signal) {
+  const projectUploadDir = join(uploadRoot, projectId, "remote-cache");
+  mkdirSync(projectUploadDir, { recursive: true });
+
+  const safeFileName = sanitizeFileName(assetRef.fileName);
+  const cacheRelativePath = join(projectId, "remote-cache", `${Date.now()}-${safeFileName}`);
+  const absolutePath = join(uploadRoot, cacheRelativePath);
+
+  try {
+    await downloadRemoteAssetToLocal(assetRef.publicUrl, absolutePath, signal);
+
+    const timestamp = nowIso();
+    const assetId = randomUUID();
+    const processedAsset = await processStoredAsset({
+      asset: {
+        id: assetId,
+        assetType: assetRef.assetType,
+        fileName: safeFileName,
+        storagePath: cacheRelativePath,
+        mimeType: assetRef.mimeType,
+        sizeBytes: assetRef.sizeBytes,
+      },
+      absolutePath,
+      uploadsRoot: uploadRoot,
+      projectId,
+    });
+
+    db.prepare(`
+      INSERT INTO assets (
+        id, project_id, generation_id, asset_type, file_name, storage_path, storage_provider, storage_key, public_url, mime_type, size_bytes, extracted_summary, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      assetId,
+      projectId,
+      generationId,
+      assetRef.assetType,
+      safeFileName,
+      assetRef.storageKey,
+      assetRef.storageProvider || "cos",
+      assetRef.storageKey,
+      assetRef.publicUrl,
+      assetRef.mimeType,
+      assetRef.sizeBytes,
+      processedAsset.extractedSummary || "",
+      timestamp,
+    );
+
+    return {
+      ...processedAsset,
+      storageProvider: assetRef.storageProvider || "cos",
+      storageKey: assetRef.storageKey,
+      publicUrl: assetRef.publicUrl,
+      absolutePath,
+      temporaryFilePath: absolutePath,
+    };
+  } catch (error) {
+    try {
+      unlinkSync(absolutePath);
+    } catch {}
+    throw error;
+  }
+}
+
+function cleanupTemporaryAssets(assets = []) {
+  assets.forEach((asset) => {
+    if (!asset?.temporaryFilePath) {
+      return;
+    }
+
+    try {
+      unlinkSync(asset.temporaryFilePath);
+    } catch {}
+  });
 }
 
 function getRelevantSamples(projectId, generationType = "general", limit = 24) {
@@ -1843,6 +2107,8 @@ function buildProjectView(row) {
     };
   });
 
+  const currentGenerationRun = historyRuns.find((run) => run.status === "running") || null;
+
   const latestCompletedRun = historyRuns.find((run) => run.status === "completed") || null;
   const latestOutputs = latestCompletedRun
     ? db
@@ -1882,6 +2148,14 @@ function buildProjectView(row) {
     accounts,
     samples,
     history,
+    currentGeneration: currentGenerationRun
+      ? {
+          id: currentGenerationRun.id,
+          status: currentGenerationRun.status,
+          summary: currentGenerationRun.asset_summary || "",
+          generationType: formatGenerationTypeLabel(currentGenerationRun.generation_type || "general"),
+        }
+      : null,
     publishJobs,
     latestAssetInsights: latestCompletedRun ? parseJsonObject(latestCompletedRun.asset_insights_json) : null,
     draftOutputs: buildDraftOutputs(latestCompletedRun, latestOutputs),

@@ -3,9 +3,23 @@ const state = {
   activeProjectId: "",
   activeTab: "project",
   generatorMode: "mock",
+  isPreparingGeneration: false,
   isGenerating: false,
   isCancellingGeneration: false,
   generationAbortController: null,
+  generationUploadProgress: null,
+  generationStatusText: "",
+  metricoolAutoSyncStarted: false,
+  uploads: {
+    cos: {
+      enabled: false,
+      bucket: "",
+      region: "",
+      uploadPrefix: "",
+      publicBaseUrl: "",
+      directUploadMinBytes: 0,
+    },
+  },
   selectedAssets: {
     images: [],
     video: null,
@@ -60,6 +74,10 @@ const metricoolNetworkByPlatform = {
   YouTube: "youtube",
 };
 
+const LARGE_VIDEO_WARNING_BYTES = 100 * 1024 * 1024;
+const GENERATION_POLL_INTERVAL_MS = 2500;
+const terminalGenerationStatuses = new Set(["completed", "failed", "cancelled"]);
+
 const elements = {
   projectSelect: document.querySelector("#projectSelect"),
   newProjectButton: document.querySelector("#newProjectButton"),
@@ -88,6 +106,9 @@ const elements = {
   generationTypeList: document.querySelector("#generationTypeList"),
   assetInsightsPanel: document.querySelector("#assetInsightsPanel"),
   generationModeHint: document.querySelector("#generationModeHint"),
+  generationStatusHint: document.querySelector("#generationStatusHint"),
+  generationProgress: document.querySelector("#generationProgress"),
+  generationProgressFill: document.querySelector("#generationProgressFill"),
   generateButton: document.querySelector("#generateButton"),
   stopGenerateButton: document.querySelector("#stopGenerateButton"),
   outputPanel: document.querySelector("#outputPanel"),
@@ -565,6 +586,205 @@ async function apiRequest(path, options = {}) {
   return payload;
 }
 
+function getSelectedAssetFiles() {
+  return [
+    ...state.selectedAssets.images.map((file) => ({ file, assetType: "image" })),
+    ...(state.selectedAssets.video ? [{ file: state.selectedAssets.video, assetType: "video" }] : []),
+  ];
+}
+
+function canUseCosDirectUpload() {
+  return Boolean(state.uploads?.cos?.enabled && globalThis.COS && getSelectedAssetFiles().length);
+}
+
+async function requestCosUploadSession(projectId, file, assetType) {
+  const payload = await apiRequest("/api/uploads/cos-sts", {
+    method: "POST",
+    json: {
+      projectId,
+      fileName: file.name,
+      assetType,
+    },
+  });
+
+  if (!payload?.session?.credentials?.tmpSecretId || !payload?.session?.credentials?.tmpSecretKey) {
+    throw new Error("COS upload session is incomplete.");
+  }
+
+  return payload.session;
+}
+
+function createCosClient(session) {
+  const COSConstructor = globalThis.COS;
+  if (!COSConstructor) {
+    throw new Error("COS browser SDK failed to load.");
+  }
+
+  return new COSConstructor({
+    getAuthorization(_, callback) {
+      callback({
+        TmpSecretId: session.credentials.tmpSecretId,
+        TmpSecretKey: session.credentials.tmpSecretKey,
+        SecurityToken: session.credentials.sessionToken,
+        StartTime: session.startTime,
+        ExpiredTime: session.expiredTime,
+      });
+    },
+  });
+}
+
+async function uploadAssetsViaCos(projectId, signal) {
+  const entries = getSelectedAssetFiles();
+  const totalBytes = entries.reduce((sum, entry) => sum + Math.max(0, Number(entry.file.size || 0)), 0) || 1;
+  const uploadedBytes = new Array(entries.length).fill(0);
+  const uploadedAssets = [];
+
+  for (const [index, entry] of entries.entries()) {
+    if (signal?.aborted) {
+      const abortError = new Error("Request cancelled");
+      abortError.name = "AbortError";
+      throw abortError;
+    }
+
+    const session = await requestCosUploadSession(projectId, entry.file, entry.assetType);
+    const cos = createCosClient(session);
+
+    const uploadedAsset = await new Promise((resolve, reject) => {
+      cos.sliceUploadFile(
+        {
+          Bucket: session.bucket,
+          Region: session.region,
+          Key: session.key,
+          Body: entry.file,
+          SliceSize: 8 * 1024 * 1024,
+          onProgress(progressData) {
+            const fraction = Math.max(0, Math.min(1, Number(progressData?.percent || 0)));
+            uploadedBytes[index] = Math.round(entry.file.size * fraction);
+            const percent = Math.max(
+              0,
+              Math.min(
+                100,
+                Math.round((uploadedBytes.reduce((sum, value) => sum + value, 0) / totalBytes) * 100),
+              ),
+            );
+            state.generationUploadProgress = percent;
+            state.generationStatusText = `Uploading to COS... ${percent}%`;
+            renderGenerationStatus();
+          },
+        },
+        (error) => {
+          if (error) {
+            reject(new Error(error.message || "COS upload failed."));
+            return;
+          }
+
+          uploadedBytes[index] = entry.file.size;
+          resolve({
+            assetType: entry.assetType,
+            fileName: entry.file.name,
+            mimeType: entry.file.type || "application/octet-stream",
+            sizeBytes: entry.file.size || 0,
+            storageProvider: "cos",
+            storageKey: session.key,
+            publicUrl: session.publicUrl,
+          });
+        },
+      );
+    });
+
+    uploadedAssets.push(uploadedAsset);
+  }
+
+  state.generationUploadProgress = 100;
+  state.generationStatusText = "Upload complete. Extracting frames and generating copy...";
+  renderGenerationStatus();
+
+  return uploadedAssets;
+}
+
+async function uploadGenerationRequest(path, formData, signal, callbacks = {}) {
+  return await new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let settled = false;
+    let processingNotified = false;
+
+    function finish(handler) {
+      return (value) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (signal && abortListener) {
+          signal.removeEventListener("abort", abortListener);
+        }
+        handler(value);
+      };
+    }
+
+    const resolveOnce = finish(resolve);
+    const rejectOnce = finish(reject);
+
+    xhr.open("POST", path);
+    xhr.responseType = "text";
+
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable) {
+        callbacks.onUploadProgress?.(null);
+        return;
+      }
+
+      const percent = Math.max(0, Math.min(100, Math.round((event.loaded / event.total) * 100)));
+      callbacks.onUploadProgress?.(percent);
+    };
+
+    xhr.upload.onload = () => {
+      if (processingNotified) {
+        return;
+      }
+      processingNotified = true;
+      callbacks.onServerProcessing?.();
+    };
+
+    xhr.onreadystatechange = () => {
+      if (xhr.readyState >= XMLHttpRequest.HEADERS_RECEIVED && !processingNotified) {
+        processingNotified = true;
+        callbacks.onServerProcessing?.();
+      }
+    };
+
+    xhr.onerror = () => {
+      rejectOnce(new Error("Network error during asset upload."));
+    };
+
+    xhr.onabort = () => {
+      const error = new Error("Request cancelled");
+      error.name = "AbortError";
+      rejectOnce(error);
+    };
+
+    xhr.onload = () => {
+      const payload = xhr.responseText ? JSON.parse(xhr.responseText || "{}") : {};
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolveOnce(payload);
+        return;
+      }
+
+      rejectOnce(new Error(payload.error || "Request failed"));
+    };
+
+    const abortListener = () => xhr.abort();
+    if (signal) {
+      if (signal.aborted) {
+        abortListener();
+        return;
+      }
+      signal.addEventListener("abort", abortListener, { once: true });
+    }
+
+    xhr.send(formData);
+  });
+}
+
 function syncMetricoolBrandsIntoProjects() {
   state.projects = state.projects.map((project) => {
     const linkedBrand = state.metricoolBrands.find((brand) => brand.blogId === project.metricool?.blogId);
@@ -620,6 +840,13 @@ function applyPayload(payload) {
     state.generatorMode = payload.generatorMode;
   }
 
+  if (payload.uploads?.cos) {
+    state.uploads.cos = {
+      ...state.uploads.cos,
+      ...payload.uploads.cos,
+    };
+  }
+
   if (Array.isArray(payload.brands)) {
     state.metricoolBrands = payload.brands;
     syncMetricoolBrandsIntoProjects();
@@ -659,6 +886,23 @@ async function loadProjects(preferredProjectId = state.activeProjectId) {
   const query = preferredProjectId ? `?activeProjectId=${encodeURIComponent(preferredProjectId)}` : "";
   const payload = await apiRequest(`/api/projects${query}`);
   applyPayload(payload);
+  maybeAutoSyncMetricoolBrands();
+}
+
+function maybeAutoSyncMetricoolBrands() {
+  if (state.metricoolAutoSyncStarted) {
+    return;
+  }
+
+  const shouldSync = state.projects.some((project) => project?.metricool?.configured);
+  if (!shouldSync) {
+    return;
+  }
+
+  state.metricoolAutoSyncStarted = true;
+  syncMetricoolBrands().catch(() => {
+    // Keep using the saved Metricool brand data if live sync is temporarily unavailable.
+  });
 }
 
 function renderProjectSelect() {
@@ -1032,6 +1276,7 @@ function renderAssetSummary() {
   elements.assetSummary.innerHTML = `
     <h4>Selected assets</h4>
     <p class="output-body">${escapeHtml(rows.join("\n"))}</p>
+    <p class="muted-copy">${state.uploads?.cos?.enabled ? "Large files will upload directly to COS before generation." : "Files upload through the app server before generation."}</p>
   `;
 }
 
@@ -1227,6 +1472,11 @@ function renderOutputPanel(project) {
 
   const outputSet = project.draftOutputs || { entries: [], meta: [] };
   if (!outputSet.entries.length) {
+    if (project.currentGeneration?.status === "running") {
+      elements.outputPanel.innerHTML = `<div class="empty-state">${escapeHtml(project.currentGeneration.summary || "Generation is running on the server...")}</div>`;
+      return;
+    }
+
     elements.outputPanel.innerHTML = '<div class="empty-state">No outputs yet. Sync channels, upload assets, then generate.</div>';
     return;
   }
@@ -1403,23 +1653,49 @@ function renderPublishComposer(project) {
 function renderGenerationControls(project) {
   const hasTargets = Boolean(getGenerationTargets(project).length);
   elements.generateButton.disabled =
-    state.isGenerating
+    state.isPreparingGeneration
+    || state.isGenerating
     || state.isCancellingGeneration
     || !hasSelectedAssets()
     || !hasTargets;
-  elements.generateButton.textContent = state.isGenerating ? "Generating..." : "Generate";
+  elements.generateButton.textContent = state.isPreparingGeneration
+    ? "Preparing..."
+    : state.isGenerating
+      ? "Generating..."
+      : "Generate";
   elements.stopGenerateButton.hidden = !state.isGenerating;
   elements.stopGenerateButton.disabled = state.isCancellingGeneration;
   elements.stopGenerateButton.textContent = state.isCancellingGeneration ? "Stopping..." : "Stop";
 }
 
 function renderModeHint() {
-  elements.generationModeHint.textContent =
+  const providerLabel =
     state.generatorMode === "openai"
       ? "Mode: OpenAI-compatible API"
       : state.generatorMode === "gateway"
         ? "Mode: Leihuo Gateway API"
         : "Mode: local fallback";
+  const uploadLabel = state.uploads?.cos?.enabled ? "Upload: COS direct" : "Upload: server relay";
+  elements.generationModeHint.textContent = `${providerLabel} · ${uploadLabel}`;
+}
+
+function renderGenerationStatus() {
+  const statusText = String(state.generationStatusText || "").trim();
+  if (!statusText) {
+    elements.generationStatusHint.hidden = true;
+    elements.generationStatusHint.textContent = "";
+  } else {
+    elements.generationStatusHint.hidden = false;
+    elements.generationStatusHint.textContent = statusText;
+  }
+
+  if (typeof state.generationUploadProgress === "number") {
+    elements.generationProgress.hidden = false;
+    elements.generationProgressFill.style.width = `${state.generationUploadProgress}%`;
+  } else {
+    elements.generationProgress.hidden = true;
+    elements.generationProgressFill.style.width = "0%";
+  }
 }
 
 function render() {
@@ -1428,6 +1704,7 @@ function render() {
   renderTabs(Boolean(project));
   renderWorkspaceShell(project);
   renderModeHint();
+  renderGenerationStatus();
 
   if (!project) {
     return;
@@ -1634,43 +1911,108 @@ async function generateDrafts() {
     return;
   }
 
-  await saveProjectEdits();
-
-  const project = getActiveProject();
-  if (!project) {
-    return;
-  }
-
-  if (!getGenerationTargets(project).length) {
-    throw new Error("Select a Metricool brand with at least one connected channel before generating copy.");
-  }
-
   if (!hasSelectedAssets()) {
     throw new Error("Upload at least one image set or one video first.");
   }
 
-  const formData = new FormData();
-  state.selectedAssets.images.forEach((image) => {
-    formData.append("images", image);
-  });
+  state.isPreparingGeneration = true;
+  state.generationStatusText = "Saving project settings...";
+  state.generationUploadProgress = null;
+  renderGenerationControls(initialProject);
+  renderGenerationStatus();
 
-  if (state.selectedAssets.video) {
-    formData.append("video", state.selectedAssets.video);
+  await saveProjectEdits();
+
+  const project = getActiveProject();
+  if (!project) {
+    state.isPreparingGeneration = false;
+    state.generationStatusText = "";
+    return;
   }
 
-  formData.append("generationType", state.generationType);
+  if (!getGenerationTargets(project).length) {
+    state.isPreparingGeneration = false;
+    state.generationStatusText = "";
+    throw new Error("Select a Metricool brand with at least one connected channel before generating copy.");
+  }
 
+  state.isPreparingGeneration = false;
   state.isGenerating = true;
   state.isCancellingGeneration = false;
   state.generationAbortController = new AbortController();
+  state.generationUploadProgress = 0;
+  state.generationStatusText = canUseCosDirectUpload()
+    ? "Requesting COS upload session..."
+    : state.selectedAssets.video
+      ? "Uploading video..."
+      : "Uploading assets...";
   renderGenerationControls(project);
+  renderGenerationStatus();
+  let generationQueued = false;
 
   try {
-    const payload = await apiRequest(`/api/projects/${project.id}/generations`, {
-      method: "POST",
-      formData,
-      signal: state.generationAbortController.signal,
-    });
+    let payload;
+    if (canUseCosDirectUpload()) {
+      const uploadedAssets = await uploadAssetsViaCos(project.id, state.generationAbortController.signal);
+      const formData = new FormData();
+      formData.append("generationType", state.generationType);
+      formData.append("uploadedAssets", JSON.stringify(uploadedAssets));
+
+      payload = await uploadGenerationRequest(
+        `/api/projects/${project.id}/generations`,
+        formData,
+        state.generationAbortController.signal,
+        {
+          onServerProcessing: () => {
+            state.generationUploadProgress = null;
+            state.generationStatusText = state.selectedAssets.video
+              ? "Upload complete. Extracting frames and generating copy..."
+              : "Upload complete. Generating copy...";
+            renderGenerationStatus();
+          },
+        },
+      );
+    } else {
+      const formData = new FormData();
+      state.selectedAssets.images.forEach((image) => {
+        formData.append("images", image);
+      });
+
+      if (state.selectedAssets.video) {
+        formData.append("video", state.selectedAssets.video);
+      }
+
+      formData.append("generationType", state.generationType);
+
+      payload = await uploadGenerationRequest(
+        `/api/projects/${project.id}/generations`,
+        formData,
+        state.generationAbortController.signal,
+        {
+          onUploadProgress: (percent) => {
+            if (typeof percent === "number") {
+              state.generationUploadProgress = percent;
+              state.generationStatusText = state.selectedAssets.video
+                ? `Uploading video... ${percent}%`
+                : `Uploading assets... ${percent}%`;
+            } else {
+              state.generationUploadProgress = null;
+              state.generationStatusText = state.selectedAssets.video
+                ? "Uploading video..."
+                : "Uploading assets...";
+            }
+            renderGenerationStatus();
+          },
+          onServerProcessing: () => {
+            state.generationUploadProgress = null;
+            state.generationStatusText = state.selectedAssets.video
+              ? "Upload complete. Extracting frames and generating copy..."
+              : "Upload complete. Generating copy...";
+            renderGenerationStatus();
+          },
+        },
+      );
+    }
 
     state.selectedAssets.images = [];
     state.selectedAssets.video = null;
@@ -1678,15 +2020,76 @@ async function generateDrafts() {
     elements.videoUploadInput.value = "";
     state.activeTab = "outputs";
     applyPayload(payload);
+
+    const refreshedProject = getActiveProject();
+    const generationId = refreshedProject?.currentGeneration?.id || refreshedProject?.history?.[0]?.id || "";
+    state.generationStatusText = refreshedProject?.currentGeneration?.summary || "Generation is running on the server...";
+    state.generationUploadProgress = null;
+    renderGenerationStatus();
+
+    if (generationId) {
+      generationQueued = true;
+      void pollGenerationUntilSettled(project.id, generationId);
+    }
   } catch (error) {
     if (error.name !== "AbortError" && error.message !== "Generation cancelled.") {
       throw error;
     }
   } finally {
+    state.isPreparingGeneration = false;
+    state.isGenerating = generationQueued;
+    state.isCancellingGeneration = false;
+    state.generationAbortController = null;
+    state.generationUploadProgress = null;
+    if (!generationQueued) {
+      state.generationStatusText = "";
+    }
+    renderGenerationControls(project);
+    renderGenerationStatus();
+  }
+}
+
+async function pollGenerationUntilSettled(projectId, generationId) {
+  while (true) {
+    await new Promise((resolve) => window.setTimeout(resolve, GENERATION_POLL_INTERVAL_MS));
+    await loadProjects(projectId);
+
+    const project = getActiveProject();
+    const currentGeneration = project?.currentGeneration;
+    if (currentGeneration?.id === generationId && currentGeneration.summary) {
+      state.generationStatusText = currentGeneration.summary;
+      renderGenerationStatus();
+    }
+
+    const historyEntry = project?.history?.find((entry) => entry.id === generationId);
+    if (!historyEntry) {
+      return;
+    }
+
+    const status = String(historyEntry.status || "").toLowerCase();
+    if (!terminalGenerationStatuses.has(status)) {
+      continue;
+    }
+
+    if (status === "completed") {
+      state.isGenerating = false;
+      state.isCancellingGeneration = false;
+      state.generationAbortController = null;
+      state.activeTab = "outputs";
+      state.generationStatusText = "";
+      render();
+      showToast("Drafts are ready.");
+      return;
+    }
+
     state.isGenerating = false;
     state.isCancellingGeneration = false;
     state.generationAbortController = null;
+    state.generationStatusText = "";
     renderGenerationControls(project);
+    renderGenerationStatus();
+    showToast(status === "cancelled" ? "Generation stopped." : "Generation failed.");
+    return;
   }
 }
 
@@ -1697,7 +2100,9 @@ async function stopGeneration() {
   }
 
   state.isCancellingGeneration = true;
+  state.generationStatusText = "Stopping generation...";
   renderGenerationControls(project);
+  renderGenerationStatus();
 
   try {
     const payload = await apiRequest(`/api/projects/${project.id}/generations/cancel`, {
@@ -1709,7 +2114,10 @@ async function stopGeneration() {
     state.isGenerating = false;
     state.isCancellingGeneration = false;
     state.generationAbortController = null;
+    state.generationUploadProgress = null;
+    state.generationStatusText = "";
     renderGenerationControls(project);
+    renderGenerationStatus();
   }
 }
 
@@ -1853,6 +2261,9 @@ function bindEvents() {
     if (state.selectedAssets.video) {
       elements.imageUploadInput.value = "";
       state.selectedAssets.images = [];
+      if (state.selectedAssets.video.size > LARGE_VIDEO_WARNING_BYTES) {
+        showToast("Videos over 100 MB can take much longer to upload and analyze.");
+      }
     }
     renderAssetSummary();
     renderGenerationControls(getActiveProject());

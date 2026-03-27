@@ -239,6 +239,8 @@ function buildAssetInsightPrompt({ assets, generationType }) {
     "Inspect the uploaded media and return only confirmed facts in valid JSON.",
     "Focus on visible text, dates, rewards, update items, and key game-side details.",
     "Do not infer facts that are not visible or directly supported by the assets.",
+    "Do not describe poses, gestures, clothing, framing, or generic human appearance unless that detail is explicitly the point of the post.",
+    "If the media only shows generic character poses or scene composition without clear business-relevant facts, leave the detail arrays empty and keep the summary neutral.",
     "Return valid JSON only. No markdown fences.",
     "",
     "JSON schema:",

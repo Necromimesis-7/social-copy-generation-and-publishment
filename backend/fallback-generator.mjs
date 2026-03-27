@@ -34,6 +34,42 @@ function normalizeInlineText(value) {
     .trim();
 }
 
+function isGenericVisualDescription(value) {
+  const text = normalizeInlineText(value).toLowerCase();
+  if (!text) {
+    return false;
+  }
+
+  const visualDescriptionPatterns = [
+    /\braise(?:s|d)? one hand\b/,
+    /\bover (?:his|her|their) head\b/,
+    /\bstanding\b/,
+    /\bsitting\b/,
+    /\bholding\b/,
+    /\bwearing\b/,
+    /\blooking at\b/,
+    /\bsmiling\b/,
+    /\bposing\b/,
+    /\bpose\b/,
+    /\bclose[- ]?up\b/,
+    /\bbackground\b/,
+    /\bone (?:man|woman|person|player|character)\b/,
+    /\b(?:man|woman|person|player|character) (?:is )?(?:raising|standing|sitting|holding|wearing|looking|smiling)\b/,
+  ];
+
+  const hasGenericPattern = visualDescriptionPatterns.some((pattern) => pattern.test(text));
+  if (!hasGenericPattern) {
+    return false;
+  }
+
+  const hasBusinessHint =
+    /\b(update|patch|maintenance|event|season|reward|giveaway|battle\s*pass|premium|ticket|bonus|drop|drops|monday|tuesday|wednesday|thursday|friday|saturday|sunday|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|login|claim|free)\b/i.test(
+      text,
+    ) || /[@#]/.test(text) || /\d/.test(text);
+
+  return !hasBusinessHint;
+}
+
 function isReadableSignalText(value) {
   const text = normalizeInlineText(value);
   if (!text) {
@@ -41,6 +77,10 @@ function isReadableSignalText(value) {
   }
 
   if (isTechnicalMetadataLine(text)) {
+    return false;
+  }
+
+  if (isGenericVisualDescription(text)) {
     return false;
   }
 
@@ -108,7 +148,9 @@ export function sanitizeAssetInsights(assetInsights = null, fallbackSummary = ""
       ? `Detected key media details: ${keyDetails.slice(0, 3).join(" | ")}.`
       : visibleText.length
         ? `Detected visible text: ${visibleText.slice(0, 2).join(" | ")}.`
-        : fallbackSummary || normalizeInlineText(raw.summary);
+        : isReadableSignalText(fallbackSummary)
+          ? normalizeInlineText(fallbackSummary)
+          : "";
 
   return {
     generationType: raw.generationType || "general",

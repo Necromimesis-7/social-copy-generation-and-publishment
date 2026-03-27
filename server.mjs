@@ -985,7 +985,6 @@ function buildMetricoolScheduledPostPayload({
     providers: [
       {
         network: providerNetwork,
-        status: "PENDING",
       },
     ],
     publicationDate: {

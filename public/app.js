@@ -151,9 +151,17 @@ function platformSuffix(platform) {
   return "x";
 }
 
+function createLocalId(prefix = "id") {
+  if (globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function createLocalAccount(projectName = "New Brand", platform = "Instagram") {
   return {
-    id: crypto.randomUUID(),
+    id: createLocalId("account"),
     platform,
     accountName: `${projectName} ${platform}`,
     handle: `@${slugify(projectName)}-${platformSuffix(platform)}`,

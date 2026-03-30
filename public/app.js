@@ -27,11 +27,17 @@ const state = {
   },
   generationType: "general",
   historyExpanded: {},
-  sampleLibraryExpanded: {},
+  sampleGroupExpanded: {},
   sampleExpanded: {},
   metricoolBrands: [],
   selectedPublishOutputId: "",
   selectedPublishAccountId: "",
+  publishOptions: {
+    tiktokPrivacyOption: "PUBLIC_TO_EVERYONE",
+    tiktokDisableComment: false,
+    tiktokDisableDuet: false,
+    tiktokDisableStitch: false,
+  },
 };
 
 const tabs = [
@@ -101,8 +107,7 @@ const elements = {
   sampleList: document.querySelector("#sampleList"),
   sampleToggleButton: document.querySelector("#sampleToggleButton"),
   syncedTargetList: document.querySelector("#syncedTargetList"),
-  imageUploadInput: document.querySelector("#imageUploadInput"),
-  videoUploadInput: document.querySelector("#videoUploadInput"),
+  assetUploadInput: document.querySelector("#assetUploadInput"),
   assetSummary: document.querySelector("#assetSummary"),
   generationTypeList: document.querySelector("#generationTypeList"),
   assetInsightsPanel: document.querySelector("#assetInsightsPanel"),
@@ -121,6 +126,11 @@ const elements = {
   publishScheduleInput: document.querySelector("#publishScheduleInput"),
   publishTitleInput: document.querySelector("#publishTitleInput"),
   publishTargetNote: document.querySelector("#publishTargetNote"),
+  publishTikTokOptions: document.querySelector("#publishTikTokOptions"),
+  publishTikTokPrivacySelect: document.querySelector("#publishTikTokPrivacySelect"),
+  publishTikTokDisableComment: document.querySelector("#publishTikTokDisableComment"),
+  publishTikTokDisableDuet: document.querySelector("#publishTikTokDisableDuet"),
+  publishTikTokDisableStitch: document.querySelector("#publishTikTokDisableStitch"),
   publishNowButton: document.querySelector("#publishNowButton"),
   publishScheduleButton: document.querySelector("#publishScheduleButton"),
   publishJobsList: document.querySelector("#publishJobsList"),
@@ -494,6 +504,61 @@ function hasSelectedAssets() {
   return state.selectedAssets.images.length > 0 || Boolean(state.selectedAssets.video);
 }
 
+function clearSelectedAssets() {
+  state.selectedAssets.images = [];
+  state.selectedAssets.video = null;
+  if (elements.assetUploadInput) {
+    elements.assetUploadInput.value = "";
+  }
+}
+
+function applySelectedAssetFiles(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) {
+    clearSelectedAssets();
+    renderAssetSummary();
+    renderGenerationControls(getActiveProject());
+    return;
+  }
+
+  const imageFiles = files.filter((file) => String(file.type || "").startsWith("image/"));
+  const videoFiles = files.filter((file) => String(file.type || "").startsWith("video/"));
+
+  if (videoFiles.length > 1) {
+    clearSelectedAssets();
+    showToast("Choose only one video per generation run.");
+    renderAssetSummary();
+    renderGenerationControls(getActiveProject());
+    return;
+  }
+
+  if (videoFiles.length && imageFiles.length) {
+    clearSelectedAssets();
+    showToast("Choose either one video or one image set per run.");
+    renderAssetSummary();
+    renderGenerationControls(getActiveProject());
+    return;
+  }
+
+  if (!videoFiles.length && !imageFiles.length) {
+    clearSelectedAssets();
+    showToast("Only image and video files are supported.");
+    renderAssetSummary();
+    renderGenerationControls(getActiveProject());
+    return;
+  }
+
+  state.selectedAssets.images = videoFiles.length ? [] : imageFiles;
+  state.selectedAssets.video = videoFiles[0] || null;
+
+  if (state.selectedAssets.video && state.selectedAssets.video.size > LARGE_VIDEO_WARNING_BYTES) {
+    showToast("Videos over 100 MB can take much longer to upload and analyze.");
+  }
+
+  renderAssetSummary();
+  renderGenerationControls(getActiveProject());
+}
+
 function getHistoryExpanded(projectId) {
   return Boolean(state.historyExpanded[projectId]);
 }
@@ -505,14 +570,24 @@ function setHistoryExpanded(projectId, expanded) {
   };
 }
 
-function getSampleLibraryExpanded(projectId) {
-  return Boolean(state.sampleLibraryExpanded[projectId]);
+function getSampleGroupStateKey(projectId, sampleType) {
+  return `${projectId}:${sampleType || "general"}`;
 }
 
-function setSampleLibraryExpanded(projectId, expanded) {
-  state.sampleLibraryExpanded = {
-    ...state.sampleLibraryExpanded,
-    [projectId]: expanded,
+function getSampleGroupExpanded(projectId, sampleType, fallback = false) {
+  const key = getSampleGroupStateKey(projectId, sampleType);
+  if (Object.prototype.hasOwnProperty.call(state.sampleGroupExpanded, key)) {
+    return Boolean(state.sampleGroupExpanded[key]);
+  }
+
+  return fallback;
+}
+
+function setSampleGroupExpanded(projectId, sampleType, expanded) {
+  const key = getSampleGroupStateKey(projectId, sampleType);
+  state.sampleGroupExpanded = {
+    ...state.sampleGroupExpanded,
+    [key]: expanded,
   };
 }
 
@@ -528,7 +603,7 @@ function setSampleExpanded(sampleId, expanded) {
 }
 
 function isSampleCollapsible(sample, body) {
-  return Boolean(body && sample.reviewStatus === "accepted" && sample.isUsable);
+  return Boolean(body && sample.reviewStatus === "accepted");
 }
 
 function buildSamplePreview(body) {
@@ -1196,145 +1271,183 @@ function renderSamples(project) {
     return;
   }
 
-  const expandedLibrary = getSampleLibraryExpanded(project.id);
-  const visibleSamples = expandedLibrary ? project.samples : project.samples.slice(0, 5);
+  const orderedTypes = ["update", "trending", "general"];
+  const grouped = new Map(orderedTypes.map((type) => [type, []]));
 
-  visibleSamples.forEach((sample) => {
-    const card = document.createElement("article");
-    const safeUrl = getSafeExternalUrl(sample.url);
-    const accountLine = sample.accountLabel ? ` • ${escapeHtml(sample.accountLabel)}` : " • Project-wide";
-    const sampleBody = sample.body?.trim() ? sample.body : "";
-    const collapsible = isSampleCollapsible(sample, sampleBody);
-    const isExpanded = !collapsible || getSampleExpanded(sample.id);
-    card.className = `sample-card${!isExpanded ? " is-collapsed" : ""}`;
+  project.samples.forEach((sample) => {
+    const type = orderedTypes.includes(sample.sampleType) ? sample.sampleType : "general";
+    grouped.get(type).push(sample);
+  });
 
-    if (!isExpanded) {
+  orderedTypes.forEach((sampleType) => {
+    const samples = grouped.get(sampleType) || [];
+    if (!samples.length) {
+      return;
+    }
+
+    const hasAttentionItems = samples.some((sample) => sample.reviewStatus !== "accepted" || !String(sample.body || "").trim());
+    const groupExpanded = getSampleGroupExpanded(project.id, sampleType, hasAttentionItems);
+
+    const groupCard = document.createElement("section");
+    groupCard.className = `sample-group-card${groupExpanded ? "" : " is-collapsed"}`;
+    groupCard.innerHTML = `
+      <div class="history-title-row sample-group-head">
+        <div>
+          <h4>${escapeHtml(`${formatGenerationTypeLabel(sampleType)} (${samples.length})`)}</h4>
+        </div>
+        <div class="sample-actions">
+          ${hasAttentionItems ? '<span class="pill">Needs review</span>' : '<span class="pill">Saved</span>'}
+          <button class="secondary-button small-button sample-group-toggle" type="button">${groupExpanded ? "Collapse" : "Open"}</button>
+        </div>
+      </div>
+    `;
+
+    const toggleButton = groupCard.querySelector(".sample-group-toggle");
+    toggleButton.addEventListener("click", () => {
+      setSampleGroupExpanded(project.id, sampleType, !groupExpanded);
+      renderSamples(project);
+    });
+
+    if (!groupExpanded) {
+      elements.sampleList.appendChild(groupCard);
+      return;
+    }
+
+    const groupBody = document.createElement("div");
+    groupBody.className = "sample-group-body";
+
+    samples.forEach((sample) => {
+      const card = document.createElement("article");
+      const safeUrl = getSafeExternalUrl(sample.url);
+      const accountLine = sample.accountLabel ? ` • ${escapeHtml(sample.accountLabel)}` : " • Project-wide";
+      const sampleBody = sample.body?.trim() ? sample.body : "";
+      const shouldDefaultCollapse = sample.reviewStatus === "accepted" && Boolean(sampleBody);
+      const collapsible = shouldDefaultCollapse;
+      const isExpanded = !shouldDefaultCollapse || getSampleExpanded(sample.id);
+      card.className = `sample-card${!isExpanded ? " is-collapsed" : ""}`;
+
+      if (!isExpanded) {
+        card.innerHTML = `
+          <div class="history-title-row">
+            <h4>Reference sample</h4>
+            <div class="sample-actions">
+              <span class="pill">${escapeHtml(formatReviewStatus(sample.reviewStatus))}</span>
+              <button class="secondary-button small-button sample-open" type="button">Open</button>
+              <button class="ghost-button small-button sample-delete" type="button">Delete</button>
+            </div>
+          </div>
+          <div class="sample-meta">${escapeHtml(formatDate(sample.publishedAt))}${accountLine}${safeUrl ? ` • <a href="${escapeHtml(safeUrl)}" target="_blank" rel="noreferrer">source link</a>` : ""}</div>
+          <p class="sample-preview">${escapeHtml(buildSamplePreview(sampleBody))}</p>
+        `;
+
+        card.querySelector(".sample-open").addEventListener("click", () => {
+          setSampleExpanded(sample.id, true);
+          renderSamples(project);
+        });
+
+        card.querySelector(".sample-delete").addEventListener("click", async (event) => {
+          const confirmed = window.confirm("Delete this sample? This cannot be undone.");
+          if (!confirmed) {
+            return;
+          }
+
+          await withButtonState(event.currentTarget, "Deleting...", async () => {
+            await deleteSample(sample.id);
+          });
+        });
+
+        groupBody.appendChild(card);
+        return;
+      }
+
       card.innerHTML = `
         <div class="history-title-row">
           <h4>Reference sample</h4>
           <div class="sample-actions">
-            <span class="pill">${escapeHtml(formatGenerationTypeLabel(sample.sampleType || "general"))}</span>
             <span class="pill">${escapeHtml(formatReviewStatus(sample.reviewStatus))}</span>
-            <button class="secondary-button small-button sample-open" type="button">Open</button>
+            <span class="pill">${escapeHtml(formatSampleMode(sample.mode))}</span>
+            ${collapsible ? '<button class="secondary-button small-button sample-collapse" type="button">Collapse</button>' : ""}
             <button class="ghost-button small-button sample-delete" type="button">Delete</button>
           </div>
         </div>
         <div class="sample-meta">${escapeHtml(formatDate(sample.publishedAt))}${accountLine}${safeUrl ? ` • <a href="${escapeHtml(safeUrl)}" target="_blank" rel="noreferrer">source link</a>` : ""}</div>
-        <p class="sample-preview">${escapeHtml(buildSamplePreview(sampleBody))}</p>
+        <div class="field-grid compact-grid sample-edit-grid">
+          <label class="field">
+            <span>Type</span>
+            <select class="sample-type-select">
+              <option value="general"${sample.sampleType === "general" ? " selected" : ""}>General</option>
+              <option value="update"${sample.sampleType === "update" ? " selected" : ""}>Update &amp; events</option>
+              <option value="trending"${sample.sampleType === "trending" ? " selected" : ""}>Trending topic</option>
+            </select>
+          </label>
+          <label class="field field-wide">
+            <span>Sample text</span>
+            <textarea class="sample-body-input" rows="4" placeholder="Paste or edit the sample text before saving.">${escapeHtml(sampleBody)}</textarea>
+          </label>
+        </div>
+        ${
+          !sampleBody.trim()
+            ? '<p class="muted-copy sample-note">This sample has no usable text yet. It will not influence generation until you save real post text.</p>'
+            : !sample.isUsable
+              ? '<p class="muted-copy sample-note">This text is treated as low-quality or boilerplate and will not influence generation until you replace it with a real post example.</p>'
+              : sample.reviewStatus !== "accepted"
+                ? '<p class="muted-copy sample-note">Saving this sample will approve it for future generation.</p>'
+                : '<p class="muted-copy sample-note">Approved samples are eligible for style matching during generation.</p>'
+        }
+        <div class="sample-actions sample-editor-actions">
+          <button class="primary-button small-button sample-save" type="button">Save sample</button>
+        </div>
       `;
 
-      card.querySelector(".sample-open").addEventListener("click", () => {
-        setSampleExpanded(sample.id, true);
+      const deleteButton = card.querySelector(".sample-delete");
+      const collapseButton = card.querySelector(".sample-collapse");
+      const saveButton = card.querySelector(".sample-save");
+      const typeSelect = card.querySelector(".sample-type-select");
+      const bodyInput = card.querySelector(".sample-body-input");
+
+      saveButton.addEventListener("click", async () => {
+        await withButtonState(saveButton, "Saving...", async () => {
+          const nextBody = bodyInput.value.trim();
+          if (!nextBody) {
+            throw new Error("Approved samples need usable sample text.");
+          }
+
+          setSampleExpanded(sample.id, false);
+          await updateSample(sample.id, {
+            body: nextBody,
+            sampleType: typeSelect.value,
+            reviewStatus: "accepted",
+          });
+        }).catch((error) => {
+          setSampleExpanded(sample.id, true);
+          window.alert(error.message);
+        });
+      });
+
+      collapseButton?.addEventListener("click", () => {
+        setSampleExpanded(sample.id, false);
         renderSamples(project);
       });
 
-      card.querySelector(".sample-delete").addEventListener("click", async (event) => {
+      deleteButton.addEventListener("click", async () => {
         const confirmed = window.confirm("Delete this sample? This cannot be undone.");
         if (!confirmed) {
           return;
         }
 
-        await withButtonState(event.currentTarget, "Deleting...", async () => {
+        await withButtonState(deleteButton, "Deleting...", async () => {
           await deleteSample(sample.id);
         });
       });
 
-      elements.sampleList.appendChild(card);
-      return;
-    }
-
-    card.innerHTML = `
-      <div class="history-title-row">
-        <h4>Reference sample</h4>
-        <div class="sample-actions">
-          <span class="pill">${escapeHtml(formatGenerationTypeLabel(sample.sampleType || "general"))}</span>
-          <span class="pill">${escapeHtml(formatReviewStatus(sample.reviewStatus))}</span>
-          <span class="pill">${escapeHtml(formatSampleMode(sample.mode))}</span>
-          ${collapsible ? '<button class="secondary-button small-button sample-collapse" type="button">Collapse</button>' : ""}
-          <button class="ghost-button small-button sample-delete" type="button">Delete</button>
-        </div>
-      </div>
-      <div class="sample-meta">${escapeHtml(formatDate(sample.publishedAt))}${accountLine}${safeUrl ? ` • <a href="${escapeHtml(safeUrl)}" target="_blank" rel="noreferrer">source link</a>` : ""}</div>
-      <div class="field-grid compact-grid sample-edit-grid">
-        <label class="field">
-          <span>Type</span>
-          <select class="sample-type-select">
-            <option value="general"${sample.sampleType === "general" ? " selected" : ""}>General</option>
-            <option value="update"${sample.sampleType === "update" ? " selected" : ""}>Update &amp; events</option>
-            <option value="trending"${sample.sampleType === "trending" ? " selected" : ""}>Trending topic</option>
-          </select>
-        </label>
-        <label class="field field-wide">
-          <span>Sample text</span>
-          <textarea class="sample-body-input" rows="4" placeholder="Paste or edit the sample text before saving.">${escapeHtml(sampleBody)}</textarea>
-        </label>
-      </div>
-      ${
-        !sampleBody.trim()
-          ? '<p class="muted-copy sample-note">This sample has no usable text yet. It will not influence generation until you save real post text.</p>'
-          : !sample.isUsable
-            ? '<p class="muted-copy sample-note">This text is treated as low-quality or boilerplate and will not influence generation until you replace it with a real post example.</p>'
-            : sample.reviewStatus !== "accepted"
-              ? '<p class="muted-copy sample-note">Saving this sample will approve it for future generation.</p>'
-              : '<p class="muted-copy sample-note">Approved samples are eligible for style matching during generation.</p>'
-      }
-      <div class="sample-actions sample-editor-actions">
-        <button class="primary-button small-button sample-save" type="button">Save sample</button>
-      </div>
-    `;
-
-    const deleteButton = card.querySelector(".sample-delete");
-    const collapseButton = card.querySelector(".sample-collapse");
-    const saveButton = card.querySelector(".sample-save");
-    const typeSelect = card.querySelector(".sample-type-select");
-    const bodyInput = card.querySelector(".sample-body-input");
-
-    saveButton.addEventListener("click", async () => {
-      await withButtonState(saveButton, "Saving...", async () => {
-        const nextBody = bodyInput.value.trim();
-        if (!nextBody) {
-          throw new Error("Approved samples need usable sample text.");
-        }
-
-        setSampleExpanded(sample.id, false);
-        await updateSample(sample.id, {
-          body: nextBody,
-          sampleType: typeSelect.value,
-          reviewStatus: "accepted",
-        });
-      }).catch((error) => {
-        setSampleExpanded(sample.id, true);
-        window.alert(error.message);
-      });
+      groupBody.appendChild(card);
     });
 
-    collapseButton?.addEventListener("click", () => {
-      setSampleExpanded(sample.id, false);
-      renderSamples(project);
-    });
-
-    deleteButton.addEventListener("click", async () => {
-      const confirmed = window.confirm("Delete this sample? This cannot be undone.");
-      if (!confirmed) {
-        return;
-      }
-
-      await withButtonState(deleteButton, "Deleting...", async () => {
-        await deleteSample(sample.id);
-      });
-    });
-
-    elements.sampleList.appendChild(card);
+    groupCard.appendChild(groupBody);
+    elements.sampleList.appendChild(groupCard);
   });
 
-  if (project.samples.length > 5) {
-    elements.sampleToggleButton.hidden = false;
-    elements.sampleToggleButton.textContent = getSampleLibraryExpanded(project.id)
-      ? "Show latest 5 samples"
-      : `Show ${project.samples.length - 5} older samples`;
-  } else {
-    elements.sampleToggleButton.hidden = true;
-  }
+  elements.sampleToggleButton.hidden = true;
 }
 
 function renderSyncedTargets(project) {
@@ -1362,7 +1475,7 @@ function renderAssetSummary() {
 
   if (!rows.length) {
     elements.assetSummary.className = "asset-summary empty-state";
-    elements.assetSummary.textContent = "No assets selected yet. Upload one image set or one video before generating.";
+    elements.assetSummary.textContent = "No assets selected yet. Upload images or one video before generating.";
     return;
   }
 
@@ -1370,7 +1483,7 @@ function renderAssetSummary() {
   elements.assetSummary.innerHTML = `
     <h4>Selected assets</h4>
     <p class="output-body">${escapeHtml(rows.join("\n"))}</p>
-    <p class="muted-copy">${state.uploads?.cos?.enabled ? "Large files will upload directly to COS before generation." : "Files upload through the app server before generation."}</p>
+    <p class="muted-copy">${state.uploads?.cos?.enabled ? "Selected assets upload directly to COS before generation." : "Selected assets upload through the app server before generation."}</p>
   `;
 }
 
@@ -1658,6 +1771,20 @@ function renderPublishJobs(project) {
   });
 }
 
+function renderTikTokPublishOptions(selectedAccount) {
+  const isTikTok = selectedAccount?.platform === "TikTok";
+  elements.publishTikTokOptions.hidden = !isTikTok;
+
+  if (!isTikTok) {
+    return;
+  }
+
+  elements.publishTikTokPrivacySelect.value = state.publishOptions.tiktokPrivacyOption || "PUBLIC_TO_EVERYONE";
+  elements.publishTikTokDisableComment.checked = Boolean(state.publishOptions.tiktokDisableComment);
+  elements.publishTikTokDisableDuet.checked = Boolean(state.publishOptions.tiktokDisableDuet);
+  elements.publishTikTokDisableStitch.checked = Boolean(state.publishOptions.tiktokDisableStitch);
+}
+
 function renderPublishComposer(project) {
   elements.publishOutputSelect.textContent = "";
   elements.publishAccountSelect.textContent = "";
@@ -1670,6 +1797,7 @@ function renderPublishComposer(project) {
     elements.publishNowButton.disabled = true;
     elements.publishScheduleButton.disabled = true;
     elements.publishTargetNote.textContent = "No project selected.";
+    renderTikTokPublishOptions(null);
     return;
   }
 
@@ -1683,6 +1811,7 @@ function renderPublishComposer(project) {
     elements.publishNowButton.disabled = true;
     elements.publishScheduleButton.disabled = true;
     elements.publishTargetNote.textContent = "Metricool is not configured on the server yet.";
+    renderTikTokPublishOptions(null);
     return;
   }
 
@@ -1692,6 +1821,7 @@ function renderPublishComposer(project) {
     elements.publishNowButton.disabled = true;
     elements.publishScheduleButton.disabled = true;
     elements.publishTargetNote.textContent = "Link this project to a Metricool brand before publishing.";
+    renderTikTokPublishOptions(null);
     return;
   }
 
@@ -1701,6 +1831,7 @@ function renderPublishComposer(project) {
     elements.publishNowButton.disabled = true;
     elements.publishScheduleButton.disabled = true;
     elements.publishTargetNote.textContent = "Generate channel outputs first, then publish or schedule them here.";
+    renderTikTokPublishOptions(null);
     return;
   }
 
@@ -1742,6 +1873,7 @@ function renderPublishComposer(project) {
   elements.publishAccountSelect.disabled = false;
   elements.publishNowButton.disabled = !selectedOutput || !selectedAccount;
   elements.publishScheduleButton.disabled = !selectedOutput || !selectedAccount;
+  renderTikTokPublishOptions(selectedAccount);
 }
 
 function renderGenerationControls(project) {
@@ -1755,7 +1887,7 @@ function renderGenerationControls(project) {
   } else if (state.isCancellingGeneration) {
     disabledReason = "Stopping the current generation.";
   } else if (!hasSelectedAssets()) {
-    disabledReason = "Upload one image set or one video first.";
+    disabledReason = "Upload images or one video first.";
   } else if (!hasTargets) {
     disabledReason = "Sync a Metricool brand with at least one connected channel first.";
   }
@@ -2028,7 +2160,7 @@ async function generateDrafts() {
   }
 
   if (!hasSelectedAssets()) {
-    throw new Error("Upload at least one image set or one video first.");
+    throw new Error("Upload images or one video first.");
   }
 
   state.isPreparingGeneration = true;
@@ -2132,8 +2264,7 @@ async function generateDrafts() {
 
     state.selectedAssets.images = [];
     state.selectedAssets.video = null;
-    elements.imageUploadInput.value = "";
-    elements.videoUploadInput.value = "";
+    elements.assetUploadInput.value = "";
     state.activeTab = "outputs";
     applyPayload(payload);
 
@@ -2262,14 +2393,23 @@ async function submitPublish(mode) {
     throw new Error("The selected output has no publishable text yet.");
   }
 
-  await createPublishJob(project.id, {
+  const publishPayload = {
     outputId: selectedOutput.id,
     accountId: selectedAccount.id,
     mode,
     scheduledAt: mode === "schedule" ? new Date(elements.publishScheduleInput.value).toISOString() : undefined,
     publishTitle,
     publishBody,
-  });
+  };
+
+  if (selectedAccount.platform === "TikTok") {
+    publishPayload.tiktokPrivacyOption = state.publishOptions.tiktokPrivacyOption;
+    publishPayload.tiktokDisableComment = state.publishOptions.tiktokDisableComment;
+    publishPayload.tiktokDisableDuet = state.publishOptions.tiktokDisableDuet;
+    publishPayload.tiktokDisableStitch = state.publishOptions.tiktokDisableStitch;
+  }
+
+  await createPublishJob(project.id, publishPayload);
 
   window.alert(mode === "schedule" ? "Queued for scheduled submission to Metricool." : "Submitted to Metricool.");
 }
@@ -2348,16 +2488,6 @@ function bindEvents() {
     });
   });
 
-  elements.sampleToggleButton.addEventListener("click", () => {
-    const project = getActiveProject();
-    if (!project || project.samples.length <= 5) {
-      return;
-    }
-
-    setSampleLibraryExpanded(project.id, !getSampleLibraryExpanded(project.id));
-    renderSamples(project);
-  });
-
   elements.historyToggleButton.addEventListener("click", () => {
     const project = getActiveProject();
     if (!project || project.history.length <= 3) {
@@ -2368,28 +2498,8 @@ function bindEvents() {
     renderHistory(project);
   });
 
-  elements.imageUploadInput.addEventListener("change", (event) => {
-    state.selectedAssets.images = Array.from(event.target.files || []);
-    if (state.selectedAssets.images.length) {
-      elements.videoUploadInput.value = "";
-      state.selectedAssets.video = null;
-    }
-    renderAssetSummary();
-    renderGenerationControls(getActiveProject());
-  });
-
-  elements.videoUploadInput.addEventListener("change", (event) => {
-    const files = Array.from(event.target.files || []);
-    state.selectedAssets.video = files[0] || null;
-    if (state.selectedAssets.video) {
-      elements.imageUploadInput.value = "";
-      state.selectedAssets.images = [];
-      if (state.selectedAssets.video.size > LARGE_VIDEO_WARNING_BYTES) {
-        showToast("Videos over 100 MB can take much longer to upload and analyze.");
-      }
-    }
-    renderAssetSummary();
-    renderGenerationControls(getActiveProject());
+  elements.assetUploadInput.addEventListener("change", (event) => {
+    applySelectedAssetFiles(event.target.files);
   });
 
   elements.generateButton.addEventListener("click", async () => {
@@ -2417,6 +2527,22 @@ function bindEvents() {
   elements.publishAccountSelect.addEventListener("change", () => {
     state.selectedPublishAccountId = elements.publishAccountSelect.value;
     renderPublishComposer(getActiveProject());
+  });
+
+  elements.publishTikTokPrivacySelect.addEventListener("change", () => {
+    state.publishOptions.tiktokPrivacyOption = elements.publishTikTokPrivacySelect.value || "PUBLIC_TO_EVERYONE";
+  });
+
+  elements.publishTikTokDisableComment.addEventListener("change", () => {
+    state.publishOptions.tiktokDisableComment = elements.publishTikTokDisableComment.checked;
+  });
+
+  elements.publishTikTokDisableDuet.addEventListener("change", () => {
+    state.publishOptions.tiktokDisableDuet = elements.publishTikTokDisableDuet.checked;
+  });
+
+  elements.publishTikTokDisableStitch.addEventListener("change", () => {
+    state.publishOptions.tiktokDisableStitch = elements.publishTikTokDisableStitch.checked;
   });
 
   elements.publishNowButton.addEventListener("click", async () => {

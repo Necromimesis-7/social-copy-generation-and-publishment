@@ -147,20 +147,15 @@
             </section>
 
             <div class="upload-row">
-              <label class="upload-card">
-                <span>Multi-image set</span>
-                <input id="imageUploadInput" type="file" accept="image/*" multiple />
-                <small>Upload one or more images for a single generation run.</small>
-              </label>
-              <label class="upload-card">
-                <span>Single video</span>
-                <input id="videoUploadInput" type="file" accept="video/*" />
-                <small>Only one video is allowed per run.</small>
+              <label class="upload-card upload-card-wide">
+                <span>Upload assets</span>
+                <input id="assetUploadInput" type="file" accept="image/*,video/*" multiple />
+                <small>Choose one video or one image set for each generation run.</small>
               </label>
             </div>
 
             <div id="assetSummary" class="asset-summary empty-state">
-              No assets selected yet. Upload one image set or one video before generating.
+              No assets selected yet. Upload images or one video before generating.
             </div>
 
             <section class="target-stack">
@@ -253,6 +248,42 @@
                 </label>
               </div>
               <p class="muted-copy publish-target-note" id="publishTargetNote"></p>
+              <section class="publish-platform-options" id="publishTikTokOptions" hidden>
+                <div class="section-head compact-head">
+                  <div>
+                    <p class="eyebrow">TikTok</p>
+                    <h4>Privacy options</h4>
+                  </div>
+                </div>
+                <div class="field-grid compact-grid">
+                  <label class="field">
+                    <span>Privacy</span>
+                    <select id="publishTikTokPrivacySelect">
+                      <option value="PUBLIC_TO_EVERYONE">Public</option>
+                      <option value="MUTUAL_FOLLOW_FRIENDS">Friends</option>
+                      <option value="SELF_ONLY">Only me</option>
+                    </select>
+                  </label>
+                  <div class="field field-wide">
+                    <span>Post settings</span>
+                    <div class="toggle-row publish-toggle-row">
+                      <label class="toggle">
+                        <input id="publishTikTokDisableComment" type="checkbox" />
+                        <span>Disable comments</span>
+                      </label>
+                      <label class="toggle">
+                        <input id="publishTikTokDisableDuet" type="checkbox" />
+                        <span>Disable duet</span>
+                      </label>
+                      <label class="toggle">
+                        <input id="publishTikTokDisableStitch" type="checkbox" />
+                        <span>Disable stitch</span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+                <p class="muted-copy publish-note">Available privacy levels can still depend on the connected TikTok account.</p>
+              </section>
               <p class="muted-copy publish-note">
                 Immediate publishing submits the selected output to Metricool now. Scheduled publishing depends on this app server staying online so the queued job can be submitted on time.
               </p>

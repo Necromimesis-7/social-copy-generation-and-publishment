@@ -49,6 +49,10 @@ const uploadRoot = join(dataRoot, "uploads");
 const dbPath = join(dataRoot, "app.db");
 const port = Number(process.env.PORT || 4173);
 const publishPollIntervalMs = Math.max(5000, Number(process.env.PUBLISH_POLL_INTERVAL_MS || 15000));
+const tiktokDefaultPrivacyOption = String(process.env.TIKTOK_PRIVACY_OPTION || "PUBLIC_TO_EVERYONE").trim() || "PUBLIC_TO_EVERYONE";
+const tiktokDefaultDisableComment = /^(1|true|yes|on)$/i.test(String(process.env.TIKTOK_DISABLE_COMMENT || ""));
+const tiktokDefaultDisableDuet = /^(1|true|yes|on)$/i.test(String(process.env.TIKTOK_DISABLE_DUET || ""));
+const tiktokDefaultDisableStitch = /^(1|true|yes|on)$/i.test(String(process.env.TIKTOK_DISABLE_STITCH || ""));
 
 mkdirSync(uploadRoot, { recursive: true });
 
@@ -232,6 +236,10 @@ function initSchema() {
       scheduled_for TEXT NOT NULL,
       publish_title TEXT NOT NULL DEFAULT '',
       publish_body TEXT NOT NULL DEFAULT '',
+      tiktok_privacy_option TEXT NOT NULL DEFAULT '',
+      tiktok_disable_comment INTEGER NOT NULL DEFAULT 0,
+      tiktok_disable_duet INTEGER NOT NULL DEFAULT 0,
+      tiktok_disable_stitch INTEGER NOT NULL DEFAULT 0,
       media_urls_json TEXT NOT NULL DEFAULT '[]',
       metricool_blog_id TEXT NOT NULL DEFAULT '',
       metricool_post_id TEXT NOT NULL DEFAULT '',
@@ -264,6 +272,10 @@ function initSchema() {
   ensureColumn("projects", "metricool_brand_channels_json", "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn("project_accounts", "metricool_publish_enabled", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("project_accounts", "metricool_network", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn("publish_jobs", "tiktok_privacy_option", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn("publish_jobs", "tiktok_disable_comment", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("publish_jobs", "tiktok_disable_duet", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("publish_jobs", "tiktok_disable_stitch", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("assets", "storage_provider", "TEXT NOT NULL DEFAULT 'local'");
   ensureColumn("assets", "storage_key", "TEXT NOT NULL DEFAULT ''");
   ensureColumn("assets", "public_url", "TEXT NOT NULL DEFAULT ''");
@@ -1063,6 +1075,10 @@ function buildMetricoolScheduledPostPayload({
   scheduledFor,
   timezone,
   mediaUrls,
+  tiktokPrivacyOption,
+  tiktokDisableComment,
+  tiktokDisableDuet,
+  tiktokDisableStitch,
 }) {
   const body = String(publishBody || "").trim();
   if (!body) {
@@ -1097,6 +1113,10 @@ function buildMetricoolScheduledPostPayload({
   if (platform === "TikTok") {
     payload.tiktokData = {
       title: String(publishTitle || derivePublishTitle(body, platform)).trim(),
+      privacyOption: String(tiktokPrivacyOption || tiktokDefaultPrivacyOption).trim() || tiktokDefaultPrivacyOption,
+      disableComment: tiktokDisableComment === undefined ? tiktokDefaultDisableComment : Boolean(tiktokDisableComment),
+      disableDuet: tiktokDisableDuet === undefined ? tiktokDefaultDisableDuet : Boolean(tiktokDisableDuet),
+      disableStitch: tiktokDisableStitch === undefined ? tiktokDefaultDisableStitch : Boolean(tiktokDisableStitch),
     };
   }
 
@@ -1145,8 +1165,9 @@ function insertPublishJobRow(projectId, input) {
   db.prepare(`
     INSERT INTO publish_jobs (
       id, project_id, output_id, generation_id, account_id, account_label, platform, provider_network, mode, scheduled_for,
-      publish_title, publish_body, media_urls_json, metricool_blog_id, status, error_message, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      publish_title, publish_body, tiktok_privacy_option, tiktok_disable_comment, tiktok_disable_duet, tiktok_disable_stitch,
+      media_urls_json, metricool_blog_id, status, error_message, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     projectId,
@@ -1160,6 +1181,10 @@ function insertPublishJobRow(projectId, input) {
     input.scheduledFor,
     input.publishTitle || "",
     input.publishBody || "",
+    input.tiktokPrivacyOption || "",
+    input.tiktokDisableComment ? 1 : 0,
+    input.tiktokDisableDuet ? 1 : 0,
+    input.tiktokDisableStitch ? 1 : 0,
     JSON.stringify(input.mediaUrls || []),
     input.metricoolBlogId || "",
     input.status || "queued",
@@ -1216,6 +1241,10 @@ async function submitPublishJob(jobId, options = {}) {
       scheduledFor: job.scheduled_for,
       timezone: getProjectMetricoolState(getProjectRow(job.project_id)).timezone || "UTC",
       mediaUrls: parseJsonArray(job.media_urls_json),
+      tiktokPrivacyOption: job.tiktok_privacy_option,
+      tiktokDisableComment: Boolean(job.tiktok_disable_comment),
+      tiktokDisableDuet: Boolean(job.tiktok_disable_duet),
+      tiktokDisableStitch: Boolean(job.tiktok_disable_stitch),
     });
 
     const response = await createMetricoolScheduledPost({
@@ -1322,6 +1351,10 @@ async function createPublishJob(projectId, body = {}) {
   const publishTitle = String(body.publishTitle || output.title || derivePublishTitle(publishBody, account.platform)).trim();
   const publishTiming = validatePublishMode(body.mode, body.scheduledAt);
   const mediaUrls = await buildMetricoolMediaUrls(project, output.generation_id);
+  const tiktokPrivacyOption = String(body.tiktokPrivacyOption || tiktokDefaultPrivacyOption).trim() || tiktokDefaultPrivacyOption;
+  const tiktokDisableComment = body.tiktokDisableComment === undefined ? tiktokDefaultDisableComment : Boolean(body.tiktokDisableComment);
+  const tiktokDisableDuet = body.tiktokDisableDuet === undefined ? tiktokDefaultDisableDuet : Boolean(body.tiktokDisableDuet);
+  const tiktokDisableStitch = body.tiktokDisableStitch === undefined ? tiktokDefaultDisableStitch : Boolean(body.tiktokDisableStitch);
 
   if (requiresMediaForPlatform(account.platform) && !mediaUrls.length) {
     throw httpError(
@@ -1341,6 +1374,10 @@ async function createPublishJob(projectId, body = {}) {
     scheduledFor: publishTiming.scheduledFor,
     publishTitle,
     publishBody,
+    tiktokPrivacyOption,
+    tiktokDisableComment,
+    tiktokDisableDuet,
+    tiktokDisableStitch,
     mediaUrls,
     metricoolBlogId: metricoolState.blogId,
     status: "queued",
@@ -1545,7 +1582,7 @@ async function createGeneration(projectId, req) {
   }
 
   if (!imageFiles.length && !videoFiles.length && !uploadedAssetRefs.length) {
-    throw httpError(400, "Upload at least one image set or one video before generating.");
+    throw httpError(400, "Upload images or one video before generating.");
   }
 
   if (uploadedAssetRefs.filter((asset) => asset.assetType === "video").length > 1) {
@@ -2066,6 +2103,10 @@ function mapPublishJobRow(job) {
     submittedAt: job.submitted_at || null,
     publishTitle: job.publish_title || "",
     publishBody: job.publish_body || "",
+    tiktokPrivacyOption: job.tiktok_privacy_option || "",
+    tiktokDisableComment: Boolean(job.tiktok_disable_comment),
+    tiktokDisableDuet: Boolean(job.tiktok_disable_duet),
+    tiktokDisableStitch: Boolean(job.tiktok_disable_stitch),
     metricoolBlogId: job.metricool_blog_id || "",
     metricoolPostId: job.metricool_post_id || "",
     metricoolPostUuid: job.metricool_post_uuid || "",

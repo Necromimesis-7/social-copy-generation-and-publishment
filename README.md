@@ -132,6 +132,10 @@ METRICOOL_USER_ID=your_metricool_user_id
 METRICOOL_BASE_URL=https://app.metricool.com/api
 PUBLIC_APP_URL=https://your-public-app-domain
 PUBLISH_POLL_INTERVAL_MS=15000
+TIKTOK_PRIVACY_OPTION=PUBLIC_TO_EVERYONE
+TIKTOK_DISABLE_COMMENT=false
+TIKTOK_DISABLE_DUET=false
+TIKTOK_DISABLE_STITCH=false
 ```
 
 Notes:
@@ -141,6 +145,7 @@ Notes:
 - On Render, if `PUBLIC_APP_URL` is left blank, the app will automatically fall back to `https://${RENDER_EXTERNAL_HOSTNAME}`.
 - Scheduled publishing depends on this app process staying online. The local dispatcher checks queued jobs every `PUBLISH_POLL_INTERVAL_MS`.
 - Current Metricool integration assumes one connected channel per network inside a Metricool brand. If you manage multiple accounts on the same platform, they usually need separate Metricool brands to publish distinctly.
+- TikTok publishing now defaults to `PUBLIC_TO_EVERYONE` with comments, duet, and stitch enabled. Override those defaults with `TIKTOK_PRIVACY_OPTION`, `TIKTOK_DISABLE_COMMENT`, `TIKTOK_DISABLE_DUET`, and `TIKTOK_DISABLE_STITCH` if your channel needs different settings.
 
 ## COS direct upload setup
 

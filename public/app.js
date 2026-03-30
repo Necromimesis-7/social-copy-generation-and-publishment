@@ -106,6 +106,7 @@ const elements = {
   generationTypeList: document.querySelector("#generationTypeList"),
   assetInsightsPanel: document.querySelector("#assetInsightsPanel"),
   generationModeHint: document.querySelector("#generationModeHint"),
+  generationGuardHint: document.querySelector("#generationGuardHint"),
   generationStatusHint: document.querySelector("#generationStatusHint"),
   generationProgress: document.querySelector("#generationProgress"),
   generationProgressFill: document.querySelector("#generationProgressFill"),
@@ -1652,6 +1653,20 @@ function renderPublishComposer(project) {
 
 function renderGenerationControls(project) {
   const hasTargets = Boolean(getGenerationTargets(project).length);
+  let disabledReason = "";
+
+  if (state.isPreparingGeneration) {
+    disabledReason = "Saving project settings before generation.";
+  } else if (state.isGenerating) {
+    disabledReason = "A generation is already running.";
+  } else if (state.isCancellingGeneration) {
+    disabledReason = "Stopping the current generation.";
+  } else if (!hasSelectedAssets()) {
+    disabledReason = "Upload one image set or one video first.";
+  } else if (!hasTargets) {
+    disabledReason = "Sync a Metricool brand with at least one connected channel first.";
+  }
+
   elements.generateButton.disabled =
     state.isPreparingGeneration
     || state.isGenerating
@@ -1666,6 +1681,14 @@ function renderGenerationControls(project) {
   elements.stopGenerateButton.hidden = !state.isGenerating;
   elements.stopGenerateButton.disabled = state.isCancellingGeneration;
   elements.stopGenerateButton.textContent = state.isCancellingGeneration ? "Stopping..." : "Stop";
+
+  if (disabledReason) {
+    elements.generationGuardHint.hidden = false;
+    elements.generationGuardHint.textContent = disabledReason;
+  } else {
+    elements.generationGuardHint.hidden = true;
+    elements.generationGuardHint.textContent = "";
+  }
 }
 
 function renderModeHint() {

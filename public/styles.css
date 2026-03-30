@@ -358,6 +358,10 @@ textarea {
   margin-top: 0.4rem;
 }
 
+.generation-guard-hint {
+  margin-top: 0.4rem;
+}
+
 .generation-progress {
   margin-top: 0.55rem;
   width: min(20rem, 100%);

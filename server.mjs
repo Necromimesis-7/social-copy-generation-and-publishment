@@ -2226,6 +2226,7 @@ function draftPlatformSortValue(platform = "") {
 
 function buildDraftOutputs(latestRun, outputs) {
   const providerLabel = latestRun ? formatProviderLabel(resolveRunProvider(latestRun)) : "";
+  const assetCount = latestRun ? Number(latestRun.asset_count || 0) : 0;
   const entries = latestRun
     ? Array.from(
         outputs
@@ -2305,9 +2306,19 @@ function buildDraftOutputs(latestRun, outputs) {
           ...(providerLabel ? [`Provider: ${providerLabel}`] : []),
           `Type: ${formatGenerationTypeLabel(latestRun.generation_type || "general")}`,
           `${latestRun.sample_count} sample${latestRun.sample_count === 1 ? "" : "s"} referenced`,
+          `${assetCount} media asset${assetCount === 1 ? "" : "s"} linked`,
           latestRun.asset_summary,
         ]
       : [],
+    media: latestRun
+      ? {
+          assetCount,
+          hasMedia: assetCount > 0,
+        }
+      : {
+          assetCount: 0,
+          hasMedia: false,
+        },
     entries,
   };
 }

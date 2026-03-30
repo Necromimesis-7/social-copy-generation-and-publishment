@@ -488,6 +488,19 @@ function getOutputEntries(project) {
   return Array.isArray(project?.draftOutputs?.entries) ? project.draftOutputs.entries : [];
 }
 
+function getDraftMediaSummary(project) {
+  const media = project?.draftOutputs?.media;
+  const assetCount = Math.max(0, Number(media?.assetCount || 0));
+  return {
+    hasMedia: Boolean(media?.hasMedia) || assetCount > 0,
+    assetCount,
+  };
+}
+
+function hasExistingGeneratedOutput(project) {
+  return Boolean(getOutputEntries(project).length || project?.history?.length);
+}
+
 function formatFileSize(sizeBytes = 0) {
   if (!sizeBytes) {
     return "";
@@ -1483,7 +1496,7 @@ function renderAssetSummary() {
   elements.assetSummary.innerHTML = `
     <h4>Selected assets</h4>
     <p class="output-body">${escapeHtml(rows.join("\n"))}</p>
-    <p class="muted-copy">${state.uploads?.cos?.enabled ? "Selected assets upload directly to COS before generation." : "Selected assets upload through the app server before generation."}</p>
+    <p class="muted-copy">${state.uploads?.cos?.enabled ? "Selected assets upload directly to COS before generation." : "Selected assets upload through the app server before generation."} Keep these files selected if you want to regenerate without uploading again.</p>
   `;
 }
 
@@ -1690,9 +1703,11 @@ function renderOutputPanel(project) {
 
   const summaryCard = document.createElement("article");
   summaryCard.className = "output-card output-summary-card";
+  const mediaSummary = getDraftMediaSummary(project);
   summaryCard.innerHTML = `
     <h4>${escapeHtml(outputSet.heading || "Generated outputs")}</h4>
     <div class="output-meta">${(outputSet.meta || []).map((item) => `<span class="pill">${escapeHtml(item)}</span>`).join("")}</div>
+    <p class="muted-copy output-entry-hint">${mediaSummary.hasMedia ? `${mediaSummary.assetCount} media asset${mediaSummary.assetCount === 1 ? "" : "s"} ready for publishing with this result.` : "No publishable media is linked to this result yet."}</p>
   `;
   elements.outputPanel.appendChild(summaryCard);
 
@@ -1868,7 +1883,13 @@ function renderPublishComposer(project) {
   }
 
   const routing = getMetricoolRouting(project, selectedAccount);
-  elements.publishTargetNote.textContent = routing.warning ? `${routing.summary} ${routing.warning}` : routing.summary;
+  const mediaSummary = getDraftMediaSummary(project);
+  const mediaNote = mediaSummary.hasMedia
+    ? `${mediaSummary.assetCount} media asset${mediaSummary.assetCount === 1 ? "" : "s"} attached to the latest generated result.`
+    : "No media asset is currently attached to the latest generated result.";
+  elements.publishTargetNote.textContent = routing.warning
+    ? `${routing.summary} ${routing.warning} ${mediaNote}`
+    : `${routing.summary} ${mediaNote}`;
   elements.publishOutputSelect.disabled = false;
   elements.publishAccountSelect.disabled = false;
   elements.publishNowButton.disabled = !selectedOutput || !selectedAccount;
@@ -1878,6 +1899,8 @@ function renderPublishComposer(project) {
 
 function renderGenerationControls(project) {
   const hasTargets = Boolean(getGenerationTargets(project).length);
+  const hasAssets = hasSelectedAssets();
+  const canRegenerate = hasAssets && hasExistingGeneratedOutput(project);
   let disabledReason = "";
 
   if (state.isPreparingGeneration) {
@@ -1886,7 +1909,7 @@ function renderGenerationControls(project) {
     disabledReason = "A generation is already running.";
   } else if (state.isCancellingGeneration) {
     disabledReason = "Stopping the current generation.";
-  } else if (!hasSelectedAssets()) {
+  } else if (!hasAssets) {
     disabledReason = "Upload images or one video first.";
   } else if (!hasTargets) {
     disabledReason = "Sync a Metricool brand with at least one connected channel first.";
@@ -1896,13 +1919,15 @@ function renderGenerationControls(project) {
     state.isPreparingGeneration
     || state.isGenerating
     || state.isCancellingGeneration
-    || !hasSelectedAssets()
+    || !hasAssets
     || !hasTargets;
   elements.generateButton.textContent = state.isPreparingGeneration
     ? "Preparing..."
     : state.isGenerating
       ? "Generating..."
-      : "Generate";
+      : canRegenerate
+        ? "Regenerate"
+        : "Generate";
   elements.stopGenerateButton.hidden = !state.isGenerating;
   elements.stopGenerateButton.disabled = state.isCancellingGeneration;
   elements.stopGenerateButton.textContent = state.isCancellingGeneration ? "Stopping..." : "Stop";
@@ -2262,9 +2287,6 @@ async function generateDrafts() {
       );
     }
 
-    state.selectedAssets.images = [];
-    state.selectedAssets.video = null;
-    elements.assetUploadInput.value = "";
     state.activeTab = "outputs";
     applyPayload(payload);
 
@@ -2294,6 +2316,27 @@ async function generateDrafts() {
     renderGenerationControls(project);
     renderGenerationStatus();
   }
+}
+
+function normalizeGenerationErrorMessage(error) {
+  const message = String(error?.message || "Generation failed");
+  if (/Update mode needs real update facts/i.test(message)) {
+    return `${message} Try General when the video has no clear dates, rewards, or visible update text.`;
+  }
+
+  return message;
+}
+
+function shouldOfferGeneralRetry(error) {
+  return state.generationType === "update" && /Update mode needs real update facts/i.test(String(error?.message || ""));
+}
+
+async function retryGenerationAsGeneral() {
+  state.generationType = "general";
+  renderGenerationModes();
+  renderGenerationControls(getActiveProject());
+  showToast("Switched to General. Trying again...");
+  await generateDrafts();
 }
 
 async function pollGenerationUntilSettled(projectId, generationId) {
@@ -2506,7 +2549,20 @@ function bindEvents() {
     try {
       await generateDrafts();
     } catch (error) {
-      window.alert(error.message);
+      if (shouldOfferGeneralRetry(error)) {
+        const confirmed = window.confirm(`${normalizeGenerationErrorMessage(error)}\n\nSwitch to General and try again with the same file?`);
+        if (confirmed) {
+          try {
+            await retryGenerationAsGeneral();
+            return;
+          } catch (retryError) {
+            window.alert(normalizeGenerationErrorMessage(retryError));
+            return;
+          }
+        }
+      }
+
+      window.alert(normalizeGenerationErrorMessage(error));
     }
   });
 

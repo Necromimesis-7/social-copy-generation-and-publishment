@@ -20,6 +20,7 @@ const state = {
       directUploadMinBytes: 0,
     },
   },
+  cosUploadTasks: [],
   selectedAssets: {
     images: [],
     video: null,
@@ -598,6 +599,60 @@ function canUseCosDirectUpload() {
   return Boolean(state.uploads?.cos?.enabled && globalThis.COS && getSelectedAssetFiles().length);
 }
 
+function createAbortError(message = "Request cancelled") {
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
+}
+
+function formatTransferSpeed(bytesPerSecond = 0) {
+  const speed = Math.max(0, Number(bytesPerSecond || 0));
+  if (!speed) {
+    return "";
+  }
+
+  if (speed >= 1024 * 1024) {
+    return `${(speed / (1024 * 1024)).toFixed(1)} MB/s`;
+  }
+
+  if (speed >= 1024) {
+    return `${Math.round(speed / 1024)} KB/s`;
+  }
+
+  return `${Math.round(speed)} B/s`;
+}
+
+function getCosUploadTuning(fileSize = 0) {
+  if (fileSize >= 500 * 1024 * 1024) {
+    return {
+      sliceSize: 24 * 1024 * 1024,
+      asyncLimit: 6,
+    };
+  }
+
+  if (fileSize >= 150 * 1024 * 1024) {
+    return {
+      sliceSize: 16 * 1024 * 1024,
+      asyncLimit: 5,
+    };
+  }
+
+  return {
+    sliceSize: 8 * 1024 * 1024,
+    asyncLimit: 4,
+  };
+}
+
+function cancelCosUploads() {
+  const taskList = Array.isArray(state.cosUploadTasks) ? state.cosUploadTasks : [];
+  taskList.forEach((entry) => {
+    try {
+      entry.cos?.cancelTask?.(entry.taskId);
+    } catch {}
+  });
+  state.cosUploadTasks = [];
+}
+
 async function requestCosUploadSession(projectId, file, assetType) {
   const payload = await apiRequest("/api/uploads/cos-sts", {
     method: "POST",
@@ -639,25 +694,54 @@ async function uploadAssetsViaCos(projectId, signal) {
   const totalBytes = entries.reduce((sum, entry) => sum + Math.max(0, Number(entry.file.size || 0)), 0) || 1;
   const uploadedBytes = new Array(entries.length).fill(0);
   const uploadedAssets = [];
+  state.cosUploadTasks = [];
 
   for (const [index, entry] of entries.entries()) {
     if (signal?.aborted) {
-      const abortError = new Error("Request cancelled");
-      abortError.name = "AbortError";
-      throw abortError;
+      throw createAbortError();
     }
 
     const session = await requestCosUploadSession(projectId, entry.file, entry.assetType);
     const cos = createCosClient(session);
+    const tuning = getCosUploadTuning(entry.file.size);
 
     const uploadedAsset = await new Promise((resolve, reject) => {
+      let taskId = "";
+      let finished = false;
+      const abortUpload = () => {
+        if (taskId) {
+          try {
+            cos.cancelTask(taskId);
+          } catch {}
+        }
+        if (!finished) {
+          reject(createAbortError());
+        }
+      };
+
+      if (signal) {
+        if (signal.aborted) {
+          abortUpload();
+          return;
+        }
+        signal.addEventListener("abort", abortUpload, { once: true });
+      }
+
       cos.sliceUploadFile(
         {
           Bucket: session.bucket,
           Region: session.region,
           Key: session.key,
           Body: entry.file,
-          SliceSize: 8 * 1024 * 1024,
+          SliceSize: tuning.sliceSize,
+          AsyncLimit: tuning.asyncLimit,
+          onTaskReady(nextTaskId) {
+            taskId = nextTaskId;
+            state.cosUploadTasks = [
+              ...state.cosUploadTasks.filter((item) => item.taskId !== nextTaskId),
+              { taskId: nextTaskId, cos },
+            ];
+          },
           onProgress(progressData) {
             const fraction = Math.max(0, Math.min(1, Number(progressData?.percent || 0)));
             uploadedBytes[index] = Math.round(entry.file.size * fraction);
@@ -668,12 +752,20 @@ async function uploadAssetsViaCos(projectId, signal) {
                 Math.round((uploadedBytes.reduce((sum, value) => sum + value, 0) / totalBytes) * 100),
               ),
             );
+            const speedText = formatTransferSpeed(progressData?.speed);
             state.generationUploadProgress = percent;
-            state.generationStatusText = `Uploading to COS... ${percent}%`;
+            state.generationStatusText = speedText
+              ? `Uploading to COS... ${percent}% · ${speedText}`
+              : `Uploading to COS... ${percent}%`;
             renderGenerationStatus();
           },
         },
         (error) => {
+          finished = true;
+          if (signal) {
+            signal.removeEventListener("abort", abortUpload);
+          }
+          state.cosUploadTasks = state.cosUploadTasks.filter((item) => item.taskId !== taskId);
           if (error) {
             reject(new Error(error.message || "COS upload failed."));
             return;
@@ -699,6 +791,7 @@ async function uploadAssetsViaCos(projectId, signal) {
   state.generationUploadProgress = 100;
   state.generationStatusText = "Upload complete. Extracting frames and generating copy...";
   renderGenerationStatus();
+  state.cosUploadTasks = [];
 
   return uploadedAssets;
 }
@@ -2128,15 +2221,17 @@ async function stopGeneration() {
   renderGenerationStatus();
 
   try {
+    cancelCosUploads();
+    state.generationAbortController?.abort();
     const payload = await apiRequest(`/api/projects/${project.id}/generations/cancel`, {
       method: "POST",
     });
-    state.generationAbortController?.abort();
     applyPayload(payload);
   } finally {
     state.isGenerating = false;
     state.isCancellingGeneration = false;
     state.generationAbortController = null;
+    state.cosUploadTasks = [];
     state.generationUploadProgress = null;
     state.generationStatusText = "";
     renderGenerationControls(project);
@@ -2228,7 +2323,7 @@ function bindEvents() {
     });
   });
 
-  elements.metricoolBrandSelect.addEventListener("change", (event) => {
+  elements.metricoolBrandSelect.addEventListener("change", async (event) => {
     const project = getActiveProject();
     if (!project) {
       return;
@@ -2238,6 +2333,11 @@ function bindEvents() {
     applySelectedMetricoolBrand(project, selectedBrand || null);
     ensurePublishSelection(project);
     render();
+    try {
+      await saveProjectEdits();
+    } catch (error) {
+      window.alert(error.message);
+    }
   });
 
   elements.addSampleButton.addEventListener("click", async () => {

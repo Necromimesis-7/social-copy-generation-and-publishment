@@ -360,6 +360,16 @@ function formatGenerationModeInstructions(generationType, trendContext) {
     ].join("\n");
   }
 
+  if (generationType === "guide") {
+    return [
+      "Generation type: guide.",
+      "Use the recent post library as the writing pattern reference for guide-style posts.",
+      "Use the extracted asset insights to explain what the uploaded video or image guide is about.",
+      "Frame the copy like an intro to a strategy guide, tutorial, walkthrough, or how-to piece.",
+      "Do not invent tips, tactics, or steps that are not confirmed by the extracted asset insights.",
+    ].join("\n");
+  }
+
   return [
     "Generation type: general.",
     "Use the recent post library as the primary writing pattern reference.",

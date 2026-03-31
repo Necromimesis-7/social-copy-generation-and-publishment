@@ -10,7 +10,7 @@ function normalizeLabel(value) {
 }
 
 export function normalizeGenerationType(value) {
-  return ["update", "trending", "general"].includes(value) ? value : "general";
+  return ["update", "trending", "guide", "general"].includes(value) ? value : "general";
 }
 
 export function formatGenerationTypeLabel(value) {
@@ -21,6 +21,10 @@ export function formatGenerationTypeLabel(value) {
 
   if (resolved === "trending") {
     return "Trending topic";
+  }
+
+  if (resolved === "guide") {
+    return "Guide";
   }
 
   return `${resolved.charAt(0).toUpperCase()}${resolved.slice(1)}`;

@@ -55,6 +55,11 @@ const generationModes = [
     description: "For patch notes, event updates, dates, rewards, and similar fact-heavy materials.",
   },
   {
+    id: "guide",
+    title: "Guide",
+    description: "For strategy, tutorial, walkthrough, and how-to content that explains what this guide covers.",
+  },
+  {
     id: "trending",
     title: "Trending topic",
     description: "For social hot-topic tie-ins after live trend confirmation.",
@@ -283,6 +288,10 @@ function formatReviewStatus(status) {
 function formatGenerationTypeLabel(value) {
   if (value === "update") {
     return "Update & events";
+  }
+
+  if (value === "guide") {
+    return "Guide";
   }
 
   if (value === "trending") {
@@ -1284,7 +1293,7 @@ function renderSamples(project) {
     return;
   }
 
-  const orderedTypes = ["update", "trending", "general"];
+  const orderedTypes = ["update", "guide", "trending", "general"];
   const grouped = new Map(orderedTypes.map((type) => [type, []]));
 
   project.samples.forEach((sample) => {
@@ -1390,6 +1399,7 @@ function renderSamples(project) {
             <select class="sample-type-select">
               <option value="general"${sample.sampleType === "general" ? " selected" : ""}>General</option>
               <option value="update"${sample.sampleType === "update" ? " selected" : ""}>Update &amp; events</option>
+              <option value="guide"${sample.sampleType === "guide" ? " selected" : ""}>Guide</option>
               <option value="trending"${sample.sampleType === "trending" ? " selected" : ""}>Trending topic</option>
             </select>
           </label>

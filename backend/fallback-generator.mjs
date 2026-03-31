@@ -243,6 +243,21 @@ function buildCoreNarrative({ generationType, assetInsights, trendContext }) {
     };
   }
 
+  if (generationType === "guide") {
+    return {
+      lead: summary || assetInsights.keyDetails[0] || "A fresh guide is ready to watch.",
+      support:
+        buildFactSentence(
+          "What this guide covers",
+          assetInsights.keyDetails.length ? assetInsights.keyDetails : assetInsights.visibleText,
+          3,
+        ) || buildFactSentence("What this guide covers", assetInsights.updateItems, 3),
+      reward: buildFactSentence("Key takeaways", [...assetInsights.updateItems, ...assetInsights.rewards], 3),
+      timing: buildFactSentence("Guide context", assetInsights.dates, 2),
+      details: buildFactSentence("Visible text", assetInsights.visibleText, 2),
+    };
+  }
+
   return {
     lead: summary || "Fresh material is ready.",
     support: buildFactSentence("Key detail", assetInsights.keyDetails, 3),
@@ -252,15 +267,16 @@ function buildCoreNarrative({ generationType, assetInsights, trendContext }) {
   };
 }
 
-function buildYoutubeTitle(core) {
-  const base = core.lead || core.support || "New update details";
+function buildYoutubeTitle(core, generationType = "general") {
+  const fallbackTitle = generationType === "guide" ? "New guide overview" : "New update details";
+  const base = core.lead || core.support || fallbackTitle;
   return truncateAtWord(base.replace(/[.]+$/g, ""), 92);
 }
 
-function buildPlatformCopy({ platform, core }) {
+function buildPlatformCopy({ platform, core, generationType }) {
   if (platform === "YouTube") {
     return {
-      title: buildYoutubeTitle(core),
+      title: buildYoutubeTitle(core, generationType),
       body: [
         core.lead,
         joinSentences([core.support, core.reward, core.timing]),
@@ -307,6 +323,7 @@ function buildPlatformOutputs({ project, generationType, assetInsights, trendCon
     const copy = buildPlatformCopy({
       platform: target.platform,
       core,
+      generationType,
     });
 
     return {

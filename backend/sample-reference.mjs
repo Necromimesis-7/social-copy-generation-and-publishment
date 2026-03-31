@@ -3,7 +3,7 @@ function normalizeWhitespace(value) {
 }
 
 export function normalizeSampleType(value) {
-  return ["update", "trending", "general"].includes(value) ? value : "general";
+  return ["update", "trending", "guide", "general"].includes(value) ? value : "general";
 }
 
 export function normalizeReviewStatus(value) {

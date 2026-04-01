@@ -1,6 +1,6 @@
 import "./backend/env.mjs";
 
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import {
   createReadStream,
   createWriteStream,
@@ -47,12 +47,19 @@ const dataRoot = process.env.DATA_ROOT
   : join(process.cwd(), "data");
 const uploadRoot = join(dataRoot, "uploads");
 const dbPath = join(dataRoot, "app.db");
+const loginPagePath = join(publicRoot, "login.html");
 const port = Number(process.env.PORT || 4173);
 const publishPollIntervalMs = Math.max(5000, Number(process.env.PUBLISH_POLL_INTERVAL_MS || 15000));
 const tiktokDefaultPrivacyOption = String(process.env.TIKTOK_PRIVACY_OPTION || "PUBLIC_TO_EVERYONE").trim() || "PUBLIC_TO_EVERYONE";
 const tiktokDefaultDisableComment = /^(1|true|yes|on)$/i.test(String(process.env.TIKTOK_DISABLE_COMMENT || ""));
 const tiktokDefaultDisableDuet = /^(1|true|yes|on)$/i.test(String(process.env.TIKTOK_DISABLE_DUET || ""));
 const tiktokDefaultDisableStitch = /^(1|true|yes|on)$/i.test(String(process.env.TIKTOK_DISABLE_STITCH || ""));
+const appPassword = String(process.env.APP_PASSWORD || process.env.ACCESS_PASSWORD || "").trim();
+const authSessionDays = Math.max(1, Number(process.env.AUTH_SESSION_DAYS || 7));
+const authSessionMaxAgeSeconds = authSessionDays * 24 * 60 * 60;
+const authSessionMaxAgeMs = authSessionMaxAgeSeconds * 1000;
+const authCookieName = String(process.env.AUTH_COOKIE_NAME || "social_studio_session").trim() || "social_studio_session";
+const authSessionSecret = String(process.env.AUTH_SESSION_SECRET || appPassword || "social-copy-studio").trim() || "social-copy-studio";
 
 mkdirSync(uploadRoot, { recursive: true });
 
@@ -92,6 +99,64 @@ migrateLegacyPlatformsToAccounts();
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+    const authState = getAuthState(req);
+
+    if (isLoginPath(url.pathname)) {
+      if (!isAuthEnabled() || authState.authenticated) {
+        redirectTo(res, "/");
+        return;
+      }
+
+      serveFile(req, res, loginPagePath, { "cache-control": "no-store" });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/auth/login") {
+      await handleAuthLogin(req, res);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/auth/logout") {
+      handleAuthLogout(res);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/auth/session") {
+      sendJson(
+        res,
+        200,
+        {
+          auth: {
+            enabled: isAuthEnabled(),
+            authenticated: authState.authenticated,
+            expiresAt: authState.expiresAt ? new Date(authState.expiresAt).toISOString() : null,
+            sessionDays: authSessionDays,
+          },
+        },
+        { "cache-control": "no-store" },
+      );
+      return;
+    }
+
+    if (isAuthEnabled() && !authState.authenticated && !url.pathname.startsWith("/uploads/")) {
+      if (url.pathname.startsWith("/api/")) {
+        sendJson(
+          res,
+          401,
+          {
+            error: "Authentication required",
+            auth: {
+              enabled: true,
+              authenticated: false,
+            },
+          },
+          { "cache-control": "no-store" },
+        );
+      } else {
+        redirectToLogin(res, url);
+      }
+      return;
+    }
 
     if (url.pathname.startsWith("/api/")) {
       await handleApi(req, res, url);
@@ -114,6 +179,210 @@ server.listen(port, () => {
 });
 
 startPublishDispatcher();
+
+function isAuthEnabled() {
+  return Boolean(appPassword);
+}
+
+function isLoginPath(pathname = "") {
+  return pathname === "/login" || pathname === "/login.html";
+}
+
+function parseCookies(headerValue = "") {
+  return String(headerValue)
+    .split(";")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .reduce((accumulator, entry) => {
+      const separatorIndex = entry.indexOf("=");
+      if (separatorIndex <= 0) {
+        return accumulator;
+      }
+
+      const key = entry.slice(0, separatorIndex).trim();
+      const rawValue = entry.slice(separatorIndex + 1).trim();
+
+      try {
+        accumulator[key] = decodeURIComponent(rawValue);
+      } catch {
+        accumulator[key] = rawValue;
+      }
+
+      return accumulator;
+    }, {});
+}
+
+function constantTimeEquals(leftValue, rightValue) {
+  const left = Buffer.from(String(leftValue));
+  const right = Buffer.from(String(rightValue));
+
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  return timingSafeEqual(left, right);
+}
+
+function createSessionSignature(payload) {
+  return createHmac("sha256", authSessionSecret).update(payload).digest("base64url");
+}
+
+function createSessionToken() {
+  const expiresAt = Date.now() + authSessionMaxAgeMs;
+  const nonce = randomUUID();
+  const payload = `${expiresAt}.${nonce}`;
+  return {
+    token: `${payload}.${createSessionSignature(payload)}`,
+    expiresAt,
+  };
+}
+
+function verifySessionToken(token) {
+  if (!token) {
+    return { authenticated: false, expiresAt: null };
+  }
+
+  const parts = String(token).split(".");
+  if (parts.length !== 3) {
+    return { authenticated: false, expiresAt: null };
+  }
+
+  const [expiresAtRaw, nonce, signature] = parts;
+  const expiresAt = Number.parseInt(expiresAtRaw, 10);
+  if (!Number.isFinite(expiresAt)) {
+    return { authenticated: false, expiresAt: null };
+  }
+
+  const payload = `${expiresAt}.${nonce}`;
+  const expectedSignature = createSessionSignature(payload);
+  if (!constantTimeEquals(signature, expectedSignature)) {
+    return { authenticated: false, expiresAt: null };
+  }
+
+  if (Date.now() > expiresAt) {
+    return { authenticated: false, expiresAt: null };
+  }
+
+  return {
+    authenticated: true,
+    expiresAt,
+  };
+}
+
+function getAuthState(req) {
+  if (!isAuthEnabled()) {
+    return {
+      enabled: false,
+      authenticated: true,
+      expiresAt: null,
+    };
+  }
+
+  const cookies = parseCookies(req.headers.cookie || "");
+  return {
+    enabled: true,
+    ...verifySessionToken(cookies[authCookieName]),
+  };
+}
+
+function buildSessionCookie(value, maxAgeSeconds) {
+  return [
+    `${authCookieName}=${encodeURIComponent(value)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${Math.max(0, Math.floor(maxAgeSeconds))}`,
+  ].join("; ");
+}
+
+function redirectTo(res, location) {
+  res.writeHead(302, {
+    location,
+    "cache-control": "no-store",
+  });
+  res.end();
+}
+
+function redirectToLogin(res, url) {
+  const nextTarget = `${url.pathname}${url.search}`;
+  const nextQuery = nextTarget && nextTarget !== "/" ? `?next=${encodeURIComponent(nextTarget)}` : "";
+  redirectTo(res, `/login${nextQuery}`);
+}
+
+async function handleAuthLogin(req, res) {
+  if (!isAuthEnabled()) {
+    sendJson(
+      res,
+      200,
+      {
+        ok: true,
+        auth: {
+          enabled: false,
+          authenticated: true,
+          expiresAt: null,
+          sessionDays: authSessionDays,
+        },
+      },
+      { "cache-control": "no-store" },
+    );
+    return;
+  }
+
+  const body = await readJson(req);
+  const password = String(body?.password || "");
+  if (!password || !constantTimeEquals(password, appPassword)) {
+    sendJson(
+      res,
+      401,
+      {
+        error: "Incorrect password",
+        auth: {
+          enabled: true,
+          authenticated: false,
+        },
+      },
+      { "cache-control": "no-store" },
+    );
+    return;
+  }
+
+  const session = createSessionToken();
+  sendJson(
+    res,
+    200,
+    {
+      ok: true,
+      auth: {
+        enabled: true,
+        authenticated: true,
+        expiresAt: new Date(session.expiresAt).toISOString(),
+        sessionDays: authSessionDays,
+      },
+    },
+    {
+      "cache-control": "no-store",
+      "set-cookie": buildSessionCookie(session.token, authSessionMaxAgeSeconds),
+    },
+  );
+}
+
+function handleAuthLogout(res) {
+  sendJson(
+    res,
+    200,
+    {
+      ok: true,
+      auth: {
+        enabled: isAuthEnabled(),
+        authenticated: false,
+      },
+    },
+    {
+      "cache-control": "no-store",
+      "set-cookie": buildSessionCookie("", 0),
+    },
+  );
+}
 
 function initSchema() {
   db.exec(`
@@ -483,14 +752,21 @@ function sendAppState(res, statusCode, activeProjectId = null) {
     projects,
     activeProjectId: resolvedActiveId,
     generatorMode: getGeneratorMode(),
+    auth: {
+      enabled: isAuthEnabled(),
+      sessionDays: authSessionDays,
+    },
     uploads: {
       cos: getClientCosConfig(),
     },
   });
 }
 
-function sendJson(res, statusCode, payload) {
-  res.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
+function sendJson(res, statusCode, payload, headers = {}) {
+  res.writeHead(statusCode, {
+    ...headers,
+    "content-type": "application/json; charset=utf-8",
+  });
   res.end(JSON.stringify(payload));
 }
 
@@ -507,6 +783,16 @@ function serveStatic(req, res, url) {
     ? join(uploadRoot, safePath.replace(/^\/uploads\//, ""))
     : join(publicRoot, safePath);
 
+  serveFile(req, res, filePath);
+}
+
+function serveFile(req, res, filePath, headers = {}) {
+  if (!["GET", "HEAD"].includes(req.method || "GET")) {
+    res.writeHead(405, { "content-type": "text/plain; charset=utf-8" });
+    res.end("Method not allowed");
+    return;
+  }
+
   if (!existsSync(filePath)) {
     res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
     res.end("Not found");
@@ -514,7 +800,10 @@ function serveStatic(req, res, url) {
   }
 
   const type = contentTypes[extname(filePath)] || "application/octet-stream";
-  res.writeHead(200, { "content-type": type });
+  res.writeHead(200, {
+    ...headers,
+    "content-type": type,
+  });
 
   if (req.method === "HEAD") {
     res.end();

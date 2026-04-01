@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Studio Access</title>
+    <style>
+      :root {
+        --bg: #f4ecdf;
+        --panel: rgba(247, 241, 232, 0.9);
+        --ink: #201915;
+        --muted: #66574a;
+        --accent: #d0562a;
+        --accent-deep: #8f2e16;
+        --line: rgba(32, 25, 21, 0.12);
+        --shadow: 0 24px 60px rgba(56, 34, 19, 0.12);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 1.5rem;
+        font-family: "Avenir Next", "Segoe UI", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(212, 143, 84, 0.3), transparent 30%),
+          linear-gradient(180deg, #f1e7d8 0%, #f7f1e8 42%, #f4ece0 100%);
+      }
+
+      .login-card {
+        width: min(28rem, 100%);
+        padding: 2rem;
+        border: 1px solid rgba(255, 255, 255, 0.65);
+        border-radius: 28px;
+        background: var(--panel);
+        backdrop-filter: blur(24px);
+        box-shadow: var(--shadow);
+        display: grid;
+        gap: 1rem;
+      }
+
+      .eyebrow {
+        margin: 0;
+        font-size: 0.75rem;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--accent-deep);
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(2rem, 5vw, 2.9rem);
+        font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+        line-height: 0.98;
+      }
+
+      p {
+        margin: 0;
+        color: var(--muted);
+      }
+
+      label {
+        display: grid;
+        gap: 0.45rem;
+        font-size: 0.95rem;
+      }
+
+      input {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 0.9rem 1rem;
+        background: rgba(255, 252, 247, 0.88);
+        color: var(--ink);
+        font: inherit;
+      }
+
+      button {
+        border: 1px solid transparent;
+        border-radius: 999px;
+        padding: 0.85rem 1.15rem;
+        font: inherit;
+        font-weight: 700;
+        color: #fffaf4;
+        background: linear-gradient(135deg, var(--accent) 0%, #e07a39 100%);
+        box-shadow: 0 14px 28px rgba(208, 86, 42, 0.22);
+        cursor: pointer;
+      }
+
+      button:disabled {
+        opacity: 0.72;
+        cursor: wait;
+      }
+
+      .error {
+        min-height: 1.25rem;
+        color: #a22f12;
+        font-size: 0.92rem;
+      }
+
+      .note {
+        font-size: 0.92rem;
+      }
+    </style>
+  </head>
+  <body>
+    <form class="login-card" id="loginForm">
+      <div>
+        <p class="eyebrow">Protected access</p>
+        <h1>Social Copy Publishing Studio</h1>
+      </div>
+      <p>Enter the shared password to open the workspace. This browser stays signed in for 7 days.</p>
+      <label>
+        <span>Password</span>
+        <input id="passwordInput" name="password" type="password" autocomplete="current-password" required />
+      </label>
+      <div class="error" id="errorMessage" aria-live="polite"></div>
+      <button id="submitButton" type="submit">Enter studio</button>
+      <p class="note">If the session expires after a week, the browser will ask for the password again.</p>
+    </form>
+
+    <script>
+      const form = document.querySelector("#loginForm");
+      const passwordInput = document.querySelector("#passwordInput");
+      const submitButton = document.querySelector("#submitButton");
+      const errorMessage = document.querySelector("#errorMessage");
+      const nextParam = new URLSearchParams(window.location.search).get("next");
+
+      function resolveNextPath() {
+        return nextParam && nextParam.startsWith("/") ? nextParam : "/";
+      }
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        errorMessage.textContent = "";
+        submitButton.disabled = true;
+        submitButton.textContent = "Checking...";
+
+        try {
+          const response = await fetch("/api/auth/login", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              password: passwordInput.value,
+            }),
+          });
+
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(payload.error || "Unable to sign in");
+          }
+
+          window.location.assign(resolveNextPath());
+        } catch (error) {
+          errorMessage.textContent = error.message || "Unable to sign in";
+          submitButton.disabled = false;
+          submitButton.textContent = "Enter studio";
+          passwordInput.focus();
+          passwordInput.select();
+        }
+      });
+
+      passwordInput.focus();
+    </script>
+  </body>
+</html>

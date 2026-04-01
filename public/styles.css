@@ -36,7 +36,16 @@ body {
 }
 
 .global-header-actions {
-  min-width: min(18rem, 100%);
+  min-width: min(24rem, 100%);
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 0.85rem;
+  flex-wrap: wrap;
+}
+
+.global-header-actions .field {
+  flex: 1 1 15rem;
 }
 
 button,

@@ -32,6 +32,10 @@ const state = {
   metricoolBrands: [],
   selectedPublishOutputId: "",
   selectedPublishAccountId: "",
+  auth: {
+    enabled: false,
+    sessionDays: 7,
+  },
   publishOptions: {
     tiktokPrivacyOption: "PUBLIC_TO_EVERYONE",
     tiktokDisableComment: false,
@@ -93,6 +97,7 @@ const terminalGenerationStatuses = new Set(["completed", "failed", "cancelled"])
 const elements = {
   projectSelect: document.querySelector("#projectSelect"),
   newProjectButton: document.querySelector("#newProjectButton"),
+  logoutButton: document.querySelector("#logoutButton"),
   tabNav: document.querySelector("#tabNav"),
   projectWorkspace: document.querySelector("#projectWorkspace"),
   projectName: document.querySelector("#projectName"),
@@ -678,11 +683,26 @@ async function apiRequest(path, options = {}) {
 
   const payload = await response.json().catch(() => ({}));
 
+  if (response.status === 401) {
+    const authError = new Error(payload.error || "Authentication required");
+    authError.name = "AuthenticationError";
+    window.location.assign("/login");
+    throw authError;
+  }
+
   if (!response.ok) {
     throw new Error(payload.error || "Request failed");
   }
 
   return payload;
+}
+
+function showRequestError(error, fallbackMessage = "Request failed") {
+  if (error?.name === "AuthenticationError") {
+    return;
+  }
+
+  window.alert(fallbackMessage || error?.message || "Request failed");
 }
 
 function getSelectedAssetFiles() {
@@ -1031,6 +1051,13 @@ function applyPayload(payload) {
     state.generatorMode = payload.generatorMode;
   }
 
+  if (payload.auth) {
+    state.auth = {
+      ...state.auth,
+      ...payload.auth,
+    };
+  }
+
   if (payload.uploads?.cos) {
     state.uploads.cos = {
       ...state.uploads.cos,
@@ -1143,6 +1170,7 @@ function renderTabs(hasProject) {
 function renderWorkspaceShell(project) {
   const hasProject = Boolean(project);
   elements.projectWorkspace.hidden = false;
+  elements.logoutButton.hidden = !state.auth.enabled;
   elements.projectName.textContent = hasProject ? project.name : "No project yet";
   elements.projectHeroHint.textContent = hasProject
     ? "Use the tabs on the left to move between setup, samples, creation, outputs, and publishing."
@@ -2478,15 +2506,27 @@ function bindEvents() {
     await withButtonState(elements.newProjectButton, "Creating...", async () => {
       await createProject();
     }).catch((error) => {
-      window.alert(error.message);
+      showRequestError(error);
     });
+  });
+
+  elements.logoutButton.addEventListener("click", async () => {
+    try {
+      await apiRequest("/api/auth/logout", {
+        method: "POST",
+      });
+    } catch (error) {
+      showRequestError(error);
+    }
+
+    window.location.assign("/login");
   });
 
   elements.saveProjectButton.addEventListener("click", async () => {
     await withButtonState(elements.saveProjectButton, "Saving...", async () => {
       await saveProjectEdits();
     }).catch((error) => {
-      window.alert(error.message);
+      showRequestError(error);
     });
   });
 
@@ -2504,7 +2544,7 @@ function bindEvents() {
     await withButtonState(elements.deleteProjectButton, "Deleting...", async () => {
       await removeProject(project.id);
     }).catch((error) => {
-      window.alert(error.message);
+      showRequestError(error);
     });
   });
 
@@ -2512,7 +2552,7 @@ function bindEvents() {
     await withButtonState(elements.syncMetricoolBrandsButton, "Syncing...", async () => {
       await syncMetricoolBrands();
     }).catch((error) => {
-      window.alert(error.message);
+      showRequestError(error);
     });
   });
 
@@ -2529,7 +2569,7 @@ function bindEvents() {
     try {
       await saveProjectEdits();
     } catch (error) {
-      window.alert(error.message);
+      showRequestError(error);
     }
   });
 
@@ -2537,7 +2577,7 @@ function bindEvents() {
     await withButtonState(elements.addSampleButton, "Importing...", async () => {
       await addSample();
     }).catch((error) => {
-      window.alert(error.message);
+      showRequestError(error);
     });
   });
 
@@ -2566,13 +2606,13 @@ function bindEvents() {
             await retryGenerationAsGeneral();
             return;
           } catch (retryError) {
-            window.alert(normalizeGenerationErrorMessage(retryError));
+            showRequestError(retryError, normalizeGenerationErrorMessage(retryError));
             return;
           }
         }
       }
 
-      window.alert(normalizeGenerationErrorMessage(error));
+      showRequestError(error, normalizeGenerationErrorMessage(error));
     }
   });
 
@@ -2580,7 +2620,7 @@ function bindEvents() {
     try {
       await stopGeneration();
     } catch (error) {
-      window.alert(error.message);
+      showRequestError(error);
     }
   });
 
@@ -2615,7 +2655,7 @@ function bindEvents() {
     await withButtonState(elements.publishNowButton, "Publishing...", async () => {
       await submitPublish("now");
     }).catch((error) => {
-      window.alert(error.message);
+      showRequestError(error);
     });
   });
 
@@ -2623,7 +2663,7 @@ function bindEvents() {
     await withButtonState(elements.publishScheduleButton, "Scheduling...", async () => {
       await submitPublish("schedule");
     }).catch((error) => {
-      window.alert(error.message);
+      showRequestError(error);
     });
   });
 }
@@ -2632,5 +2672,5 @@ bindEvents();
 render();
 
 loadProjects().catch((error) => {
-  window.alert(`Failed to load projects: ${error.message}`);
+  showRequestError(error, `Failed to load projects: ${error.message}`);
 });
